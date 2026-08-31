@@ -1,0 +1,48 @@
+log:
+  setup:
+    version: 1
+    formatters:
+      normal:
+        format: "%(asctime)s [%(process)d] %(levelname)-5s %(name)s %(message)s"
+    handlers:
+      stderr:
+        class: "logging.StreamHandler"
+        formatter: "normal"
+        stream: "ext://sys.stderr"
+    loggers:
+      sygnal.access:
+        propagate: false
+        handlers: ["stderr"]
+        level: "INFO"
+    root:
+      handlers: ["stderr"]
+      level: "INFO"
+    disable_existing_loggers: false
+  access:
+    x_forwarded_for: false
+
+http:
+  bind_addresses: ["0.0.0.0"]
+  port: 5000
+
+metrics:
+  prometheus:
+    enabled: false
+  opentracing:
+    enabled: false
+  sentry:
+    enabled: false
+
+apps:
+  com.collectorfigures.chat.web:
+    type: webpush
+    payload_mode: cfs_minimal
+    vapid_private_key: /run/secrets/cfs_webpush_vapid_private_key.pem
+    vapid_contact_email: support@collectorfigures.com
+    allowed_endpoints:
+      - updates.push.services.mozilla.com
+      - fcm.googleapis.com
+      - "*.notify.windows.com"
+    ttl: 120
+    max_connections: 20
+    inflight_request_limit: 128
