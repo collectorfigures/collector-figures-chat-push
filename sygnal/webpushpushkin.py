@@ -293,9 +293,7 @@ class WebpushPushkin(ConcurrencyLimitedPushkin):
         return payload
 
     @staticmethod
-    def _build_cfs_minimal_payload(
-        n: Notification, device: Device
-    ) -> Dict[str, Any]:
+    def _build_cfs_minimal_payload(n: Notification, device: Device) -> Dict[str, Any]:
         """Build the privacy-minimised Collector Figures browser payload."""
         payload: Dict[str, Any] = {}
 
