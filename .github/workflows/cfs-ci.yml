@@ -22,9 +22,18 @@ jobs:
           python -m pip install --disable-pip-version-check poetry==1.8.3
           poetry install --with dev --no-interaction
       - name: Verify CFS minimal payload
-        run: poetry run pytest -q tests/test_webpush_cfs.py
+        run: |
+          poetry run python - <<'PY'
+          import runpy
+
+          tests = runpy.run_path('tests/test_webpush_cfs.py')
+          for name in sorted(tests):
+              if name.startswith('test_'):
+                  tests[name]()
+                  print(f'PASS {name}')
+          PY
       - name: Run the full upstream test suite on Linux
-        run: poetry run pytest -q
+        run: poetry run python -m twisted.trial tests
       - name: Verify formatting and static analysis
         run: |
           poetry run black --check sygnal/webpushpushkin.py tests/test_webpush_cfs.py
