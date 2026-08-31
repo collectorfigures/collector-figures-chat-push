@@ -82,3 +82,27 @@ def test_pushkey_log_identifier_is_one_way_and_stable() -> None:
     assert identifier == WebpushPushkin._pushkey_log_id("sensitive-push-key")
     assert identifier != "sensitive-push-key"
     assert len(identifier) == 12
+
+
+def test_webpush_endpoint_validation_is_https_origin_safe_and_exact() -> None:
+    assert (
+        WebpushPushkin._validated_endpoint_domain(
+            "https://fcm.googleapis.com/fcm/send/opaque"
+        )
+        == "fcm.googleapis.com"
+    )
+
+    for endpoint in [
+        "http://fcm.googleapis.com/fcm/send/opaque",
+        "https://user@fcm.googleapis.com/fcm/send/opaque",
+        "https://fcm.googleapis.com:444/fcm/send/opaque",
+        "https://fcm.googleapis.com/",
+        "https://fcm.googleapis.com/fcm/send/opaque#fragment",
+        "not-a-url",
+    ]:
+        try:
+            WebpushPushkin._validated_endpoint_domain(endpoint)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"unsafe endpoint accepted: {endpoint}")

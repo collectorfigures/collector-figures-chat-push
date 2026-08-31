@@ -64,6 +64,9 @@ DEFAULT_TTL = 15 * 60  # in seconds
 # Max payload size is 4096
 MAX_BODY_LENGTH = 1000
 MAX_CIPHERTEXT_LENGTH = 2000
+MAX_ENDPOINT_LENGTH = 2048
+MAX_PUSHKEY_LENGTH = 512
+MAX_AUTH_LENGTH = 256
 
 
 class WebpushPushkin(ConcurrencyLimitedPushkin):
@@ -154,7 +157,14 @@ class WebpushPushkin(ConcurrencyLimitedPushkin):
         endpoint = device.data.get("endpoint")
         auth = device.data.get("auth")
 
-        if not p256dh or not isinstance(endpoint, str) or not isinstance(auth, str):
+        if (
+            not p256dh
+            or not isinstance(endpoint, str)
+            or not isinstance(auth, str)
+            or len(p256dh) > MAX_PUSHKEY_LENGTH
+            or len(endpoint) > MAX_ENDPOINT_LENGTH
+            or len(auth) > MAX_AUTH_LENGTH
+        ):
             logger.warning(
                 "Rejecting WebPush subscription %s; subscription info is incomplete "
                 "(has_p256dh=%s, has_endpoint=%s, has_auth=%s)",
@@ -165,7 +175,14 @@ class WebpushPushkin(ConcurrencyLimitedPushkin):
             )
             return [device.pushkey]
 
-        endpoint_domain = urlparse(endpoint).netloc
+        try:
+            endpoint_domain = self._validated_endpoint_domain(endpoint)
+        except ValueError:
+            logger.error(
+                "WebPush subscription %s has a malformed or unsafe endpoint, blocking request",
+                self._pushkey_log_id(device.pushkey),
+            )
+            return []
         if self.allowed_endpoints:
             allowed = any(
                 regex.fullmatch(endpoint_domain) for regex in self.allowed_endpoints
@@ -233,6 +250,27 @@ class WebpushPushkin(ConcurrencyLimitedPushkin):
         if reject_pushkey:
             return [device.pushkey]
         return []
+
+    @staticmethod
+    def _validated_endpoint_domain(endpoint: str) -> str:
+        parsed = urlparse(endpoint)
+        try:
+            port = parsed.port
+        except ValueError as error:
+            raise ValueError("invalid endpoint port") from error
+        hostname = parsed.hostname
+        if (
+            parsed.scheme != "https"
+            or not hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or port is not None
+            or not parsed.path
+            or parsed.path == "/"
+            or parsed.fragment
+        ):
+            raise ValueError("unsafe WebPush endpoint")
+        return hostname.lower()
 
     @staticmethod
     def _build_payload(n: Notification, device: Device) -> Dict[str, Any]:
