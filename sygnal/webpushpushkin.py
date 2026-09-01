@@ -254,6 +254,8 @@ class WebpushPushkin(ConcurrencyLimitedPushkin):
 
     @staticmethod
     def _validated_endpoint_domain(endpoint: str) -> str:
+        if not endpoint or len(endpoint) > MAX_ENDPOINT_LENGTH:
+            raise ValueError("unsafe WebPush endpoint length")
         parsed = urlparse(endpoint)
         try:
             port = parsed.port
@@ -267,7 +269,6 @@ class WebpushPushkin(ConcurrencyLimitedPushkin):
             or parsed.password is not None
             or port is not None
             or not parsed.path
-            or parsed.path == "/"
             or parsed.fragment
         ):
             raise ValueError("unsafe WebPush endpoint")
@@ -284,11 +285,10 @@ class WebpushPushkin(ConcurrencyLimitedPushkin):
                 rf"/(?:fcm/send|wp)/{opaque_path_token}", parsed.path
             ):
                 raise ValueError("unsupported FCM WebPush endpoint shape")
-        elif re.fullmatch(r"[a-z0-9-]+\.notify\.windows\.com", hostname):
-            if parsed.path != "/w/" or not re.fullmatch(
-                r"token=[A-Za-z0-9%._~-]{16,1900}", parsed.query
-            ):
-                raise ValueError("unsupported Windows WebPush endpoint shape")
+        elif re.fullmatch(r"(?:[a-z0-9-]+\.)*notify\.windows\.com", hostname):
+            # Microsoft requires the channel URI to be treated as an opaque string;
+            # only the HTTPS authority and generic URL safety boundary are stable.
+            pass
         else:
             raise ValueError("unsupported WebPush provider")
 
@@ -363,7 +363,9 @@ class WebpushPushkin(ConcurrencyLimitedPushkin):
                 if default_payload.get("cfs_schema") == 1:
                     payload["cfs_schema"] = 1
                 fingerprint = default_payload.get("cfs_account_fingerprint")
-                if isinstance(fingerprint, str) and 0 < len(fingerprint) <= 64:
+                if isinstance(fingerprint, str) and re.fullmatch(
+                    r"[A-Za-z0-9_-]{22}", fingerprint
+                ):
                     payload["cfs_account_fingerprint"] = fingerprint
 
         if n.room_id:
