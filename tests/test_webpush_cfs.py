@@ -102,7 +102,7 @@ def test_webpush_endpoint_validation_is_https_origin_safe_and_exact() -> None:
 
     assert (
         sha256(fixture_path.read_bytes()).hexdigest()
-        == "a10840295981d1b2f66400a95ed92d2342d0988d259dc049086319d7180e700e"
+        == "9999f3e68b1bba37355fccd5231c8026a679d7550bff1cd7359c97eabcb4aab6"
     )
 
     assert fixtures["schema"] == "cfs-webpush-endpoint-fixtures/v2"
@@ -111,23 +111,35 @@ def test_webpush_endpoint_validation_is_https_origin_safe_and_exact() -> None:
     assert fixtures["safari_status"] == "fail_closed_pending_real_acceptance"
     assert set(fixtures["provenance"]) == {"chrome", "edge", "firefox"}
 
+    matrix = []
     for fixture in fixtures["valid"]:
         endpoint = fixture["endpoint"]
         assert (
             WebpushPushkin._validated_endpoint_domain(endpoint)
             == urlparse(endpoint).hostname
         )
+        matrix.append({"case": fixture["case"], "accepted": True})
 
     for fixture in fixtures["invalid"]:
         endpoint = fixture["endpoint"]
         try:
             WebpushPushkin._validated_endpoint_domain(endpoint)
         except ValueError:
-            pass
+            matrix.append({"case": fixture["case"], "accepted": False})
         else:
             raise AssertionError(
                 f"unsafe endpoint accepted ({fixture['reason']}): {endpoint}"
             )
+
+    expected_matrix = [
+        *({"case": fixture["case"], "accepted": True} for fixture in fixtures["valid"]),
+        *(
+            {"case": fixture["case"], "accepted": False}
+            for fixture in fixtures["invalid"]
+        ),
+    ]
+    assert matrix == expected_matrix
+    print(f"CFS_ENDPOINT_MATRIX={json.dumps(matrix, separators=(',', ':'))}")
 
     try:
         WebpushPushkin._validated_endpoint_domain(

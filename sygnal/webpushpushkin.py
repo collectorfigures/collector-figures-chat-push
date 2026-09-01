@@ -267,8 +267,7 @@ class WebpushPushkin(ConcurrencyLimitedPushkin):
             or not hostname
             or parsed.username is not None
             or parsed.password is not None
-            or port is not None
-            or not parsed.path
+            or (port is not None and port != 443)
             or parsed.fragment
         ):
             raise ValueError("unsafe WebPush endpoint")
