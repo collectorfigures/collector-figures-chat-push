@@ -10,6 +10,7 @@
 import json
 import logging
 import os.path
+import re
 from base64 import urlsafe_b64encode
 from hashlib import blake2s
 from io import BytesIO
@@ -270,7 +271,28 @@ class WebpushPushkin(ConcurrencyLimitedPushkin):
             or parsed.fragment
         ):
             raise ValueError("unsafe WebPush endpoint")
-        return hostname.lower()
+        hostname = hostname.lower()
+        opaque_path_token = r"[A-Za-z0-9:_-]{16,1024}"
+
+        if hostname == "updates.push.services.mozilla.com":
+            if parsed.query or not re.fullmatch(
+                rf"/wpush/v2/{opaque_path_token}", parsed.path
+            ):
+                raise ValueError("unsupported Mozilla WebPush endpoint shape")
+        elif hostname == "fcm.googleapis.com":
+            if parsed.query or not re.fullmatch(
+                rf"/(?:fcm/send|wp)/{opaque_path_token}", parsed.path
+            ):
+                raise ValueError("unsupported FCM WebPush endpoint shape")
+        elif re.fullmatch(r"[a-z0-9-]+\.notify\.windows\.com", hostname):
+            if parsed.path != "/w/" or not re.fullmatch(
+                r"token=[A-Za-z0-9%._~-]{16,1900}", parsed.query
+            ):
+                raise ValueError("unsupported Windows WebPush endpoint shape")
+        else:
+            raise ValueError("unsupported WebPush provider")
+
+        return hostname
 
     @staticmethod
     def _build_payload(n: Notification, device: Device) -> Dict[str, Any]:

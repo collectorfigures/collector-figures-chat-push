@@ -2,6 +2,10 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-only
 
+import json
+from pathlib import Path
+from urllib.parse import urlparse
+
 from sygnal.notifications import Device, Notification
 from sygnal.webpushpushkin import WebpushPushkin
 
@@ -85,24 +89,27 @@ def test_pushkey_log_identifier_is_one_way_and_stable() -> None:
 
 
 def test_webpush_endpoint_validation_is_https_origin_safe_and_exact() -> None:
-    assert (
-        WebpushPushkin._validated_endpoint_domain(
-            "https://fcm.googleapis.com/fcm/send/opaque"
-        )
-        == "fcm.googleapis.com"
-    )
+    fixture_path = Path(__file__).parent / "fixtures" / "cfs-webpush-endpoints.json"
+    fixtures = json.loads(fixture_path.read_text(encoding="utf-8"))
 
-    for endpoint in [
-        "http://fcm.googleapis.com/fcm/send/opaque",
-        "https://user@fcm.googleapis.com/fcm/send/opaque",
-        "https://fcm.googleapis.com:444/fcm/send/opaque",
-        "https://fcm.googleapis.com/",
-        "https://fcm.googleapis.com/fcm/send/opaque#fragment",
-        "not-a-url",
-    ]:
+    assert fixtures["schema"] == "cfs-webpush-endpoint-fixtures/v1"
+    assert fixtures["tokens"] == "synthetic"
+    assert fixtures["safari_status"] == "fail_closed_pending_real_acceptance"
+
+    for fixture in fixtures["valid"]:
+        endpoint = fixture["endpoint"]
+        assert (
+            WebpushPushkin._validated_endpoint_domain(endpoint)
+            == urlparse(endpoint).hostname
+        )
+
+    for fixture in fixtures["invalid"]:
+        endpoint = fixture["endpoint"]
         try:
             WebpushPushkin._validated_endpoint_domain(endpoint)
         except ValueError:
             pass
         else:
-            raise AssertionError(f"unsafe endpoint accepted: {endpoint}")
+            raise AssertionError(
+                f"unsafe endpoint accepted ({fixture['reason']}): {endpoint}"
+            )
