@@ -35,7 +35,9 @@ promote = workflow.index("Promote the verified digest without overwriting formal
 pair_inspect_sha = promotion_script.index('inspect_tag "SHA"')
 pair_inspect_version = promotion_script.index('inspect_tag "VERSION"')
 sha_mismatch_gate = promotion_script.index("sha tag points to a different digest")
-version_mismatch_gate = promotion_script.index("version tag points to a different digest")
+version_mismatch_gate = promotion_script.index(
+    "version tag points to a different digest"
+)
 sha_write = promotion_script.index('promote_missing_tag "SHA"')
 version_write = promotion_script.index('promote_missing_tag "TAG"')
 
@@ -99,8 +101,13 @@ assert "DEFINITELY_NOT_FOUND" in promotion_script
 assert 'INSPECT_STATE="ERROR"' in promotion_script
 assert "formal tag pair preflight failed before writes" in promotion_script
 assert (
-    0 <= pair_inspect_sha < pair_inspect_version < sha_mismatch_gate
-    < version_mismatch_gate < sha_write < version_write
+    0
+    <= pair_inspect_sha
+    < pair_inspect_version
+    < sha_mismatch_gate
+    < version_mismatch_gate
+    < sha_write
+    < version_write
 )
 assert "CFS_OCI_FAIL_BEFORE_VERSION_WRITE" in promotion_script
 assert re.search(r"partial_version_tag:\s*false", promotion_script)
@@ -179,7 +186,10 @@ assert "Future Technical Owner" in permission_plan
 assert "prevent self-review: `true`" in permission_plan
 assert "environment.name: cfs-push-release" in permission_plan
 assert "regctl v0.11.6" in permission_plan
-assert "8e0e62a497fcdb8048d18aa927a139613176ba0531f412bc541044e28f9856bd" in permission_plan
+assert (
+    "8e0e62a497fcdb8048d18aa927a139613176ba0531f412bc541044e28f9856bd"
+    in permission_plan
+)
 assert "not applied" in permission_plan.lower()
 
 literal_secret_patterns = [
