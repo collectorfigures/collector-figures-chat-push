@@ -116,6 +116,8 @@ assert (
     in integration_script
 )
 assert "127.0.0.1:5000:5000" in integration_script
+assert 'repository_prefix="127.0.0.1:5000/' in integration_script
+assert 'repository_prefix="localhost:5000/' not in integration_script
 assert "# A: both formal tags are absent" in integration_script
 assert "# B: both formal tags already exist" in integration_script
 assert "# C: SHA exists at a different digest" in integration_script
