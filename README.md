@@ -1,7 +1,7 @@
 # Collector Figures Chat Push Gateway
 
 This repository is the complete AGPL source for the Collector Figures Web Push Gateway. It is based on Sygnal v0.17.0
-and keeps the upstream source, build system, license, dependency lock, and history.
+and keeps the complete current upstream source, build system, license, dependency lock, and exact upstream pointers.
 
 ```text
 product=Collector Figures Chat Push Gateway

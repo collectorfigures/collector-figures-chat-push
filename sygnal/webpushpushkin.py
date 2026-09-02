@@ -10,6 +10,7 @@
 import json
 import logging
 import os.path
+import re
 from base64 import urlsafe_b64encode
 from hashlib import blake2s
 from io import BytesIO
@@ -64,6 +65,9 @@ DEFAULT_TTL = 15 * 60  # in seconds
 # Max payload size is 4096
 MAX_BODY_LENGTH = 1000
 MAX_CIPHERTEXT_LENGTH = 2000
+MAX_ENDPOINT_LENGTH = 2048
+MAX_PUSHKEY_LENGTH = 512
+MAX_AUTH_LENGTH = 256
 
 
 class WebpushPushkin(ConcurrencyLimitedPushkin):
@@ -154,7 +158,14 @@ class WebpushPushkin(ConcurrencyLimitedPushkin):
         endpoint = device.data.get("endpoint")
         auth = device.data.get("auth")
 
-        if not p256dh or not isinstance(endpoint, str) or not isinstance(auth, str):
+        if (
+            not p256dh
+            or not isinstance(endpoint, str)
+            or not isinstance(auth, str)
+            or len(p256dh) > MAX_PUSHKEY_LENGTH
+            or len(endpoint) > MAX_ENDPOINT_LENGTH
+            or len(auth) > MAX_AUTH_LENGTH
+        ):
             logger.warning(
                 "Rejecting WebPush subscription %s; subscription info is incomplete "
                 "(has_p256dh=%s, has_endpoint=%s, has_auth=%s)",
@@ -165,7 +176,14 @@ class WebpushPushkin(ConcurrencyLimitedPushkin):
             )
             return [device.pushkey]
 
-        endpoint_domain = urlparse(endpoint).netloc
+        try:
+            endpoint_domain = self._validated_endpoint_domain(endpoint)
+        except ValueError:
+            logger.error(
+                "WebPush subscription %s has a malformed or unsafe endpoint, blocking request",
+                self._pushkey_log_id(device.pushkey),
+            )
+            return []
         if self.allowed_endpoints:
             allowed = any(
                 regex.fullmatch(endpoint_domain) for regex in self.allowed_endpoints
@@ -233,6 +251,47 @@ class WebpushPushkin(ConcurrencyLimitedPushkin):
         if reject_pushkey:
             return [device.pushkey]
         return []
+
+    @staticmethod
+    def _validated_endpoint_domain(endpoint: str) -> str:
+        if not endpoint or len(endpoint) > MAX_ENDPOINT_LENGTH:
+            raise ValueError("unsafe WebPush endpoint length")
+        parsed = urlparse(endpoint)
+        try:
+            port = parsed.port
+        except ValueError as error:
+            raise ValueError("invalid endpoint port") from error
+        hostname = parsed.hostname
+        if (
+            parsed.scheme != "https"
+            or not hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or (port is not None and port != 443)
+            or parsed.fragment
+        ):
+            raise ValueError("unsafe WebPush endpoint")
+        hostname = hostname.lower()
+        opaque_path_token = r"[A-Za-z0-9:_-]{16,1024}"
+
+        if hostname == "updates.push.services.mozilla.com":
+            if parsed.query or not re.fullmatch(
+                rf"/wpush/v2/{opaque_path_token}", parsed.path
+            ):
+                raise ValueError("unsupported Mozilla WebPush endpoint shape")
+        elif hostname == "fcm.googleapis.com":
+            if parsed.query or not re.fullmatch(
+                rf"/(?:fcm/send|wp)/{opaque_path_token}", parsed.path
+            ):
+                raise ValueError("unsupported FCM WebPush endpoint shape")
+        elif re.fullmatch(r"(?:[a-z0-9-]+\.)*notify\.windows\.com", hostname):
+            # Microsoft requires the channel URI to be treated as an opaque string;
+            # only the HTTPS authority and generic URL safety boundary are stable.
+            pass
+        else:
+            raise ValueError("unsupported WebPush provider")
+
+        return hostname
 
     @staticmethod
     def _build_payload(n: Notification, device: Device) -> Dict[str, Any]:
@@ -303,7 +362,9 @@ class WebpushPushkin(ConcurrencyLimitedPushkin):
                 if default_payload.get("cfs_schema") == 1:
                     payload["cfs_schema"] = 1
                 fingerprint = default_payload.get("cfs_account_fingerprint")
-                if isinstance(fingerprint, str) and 0 < len(fingerprint) <= 64:
+                if isinstance(fingerprint, str) and re.fullmatch(
+                    r"[A-Za-z0-9_-]{22}", fingerprint
+                ):
                     payload["cfs_account_fingerprint"] = fingerprint
 
         if n.room_id:

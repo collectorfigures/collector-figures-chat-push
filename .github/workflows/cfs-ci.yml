@@ -41,6 +41,7 @@ jobs:
           poetry run python -m compileall -q sygnal
       - name: Verify CFS runtime configuration
         run: |
+          poetry run python scripts-dev/verify_cfs_release_workflow.py
           poetry run python - <<'PY'
           import yaml
           with open('contrib/cfs/sygnal.cfs.yaml', encoding='utf-8') as handle:
