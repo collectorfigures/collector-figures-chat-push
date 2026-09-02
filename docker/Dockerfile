@@ -6,16 +6,15 @@
 #    docker build -f docker/Dockerfile .
 #
 
-ARG DEBIAN_VERSION=bookworm
-ARG PYTHON_VERSION=3.12
 ARG POETRY_VERSION=1.8.3
 
 ###
 ### Stage 0: generate requirements.txt
 ###
-### This stage is platform-agnostic, so we can use the build platform in case of cross-compilation.
+### The CFS release candidate is intentionally restricted to linux/amd64.
 ###
-FROM --platform=$BUILDPLATFORM ghcr.io/astral-sh/uv:python${PYTHON_VERSION}-${DEBIAN_VERSION} AS requirements
+# linux/amd64 manifest lock for ghcr.io/astral-sh/uv:python3.12-bookworm
+FROM --platform=linux/amd64 ghcr.io/astral-sh/uv:python3.12-bookworm@sha256:9aa60c50016c0485636ab9a830246a6ef3399aa4a8bab3d17ef4a2358fba2ca7 AS requirements
 
 WORKDIR /sygnal
 
@@ -50,7 +49,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 ###
 ### Stage 1: builder
 ###
-FROM ghcr.io/astral-sh/uv:python${PYTHON_VERSION}-${DEBIAN_VERSION} AS builder
+# linux/amd64 manifest lock for ghcr.io/astral-sh/uv:python3.12-bookworm
+FROM --platform=linux/amd64 ghcr.io/astral-sh/uv:python3.12-bookworm@sha256:9aa60c50016c0485636ab9a830246a6ef3399aa4a8bab3d17ef4a2358fba2ca7 AS builder
 
 # This silences a warning as uv isn't able to do hardlinks between its cache
 # (mounted as --mount=type=cache) and the target directory.
@@ -90,7 +90,8 @@ RUN \
 ### Stage 2: runtime
 ###
 
-FROM docker.io/library/python:${PYTHON_VERSION}-slim-${DEBIAN_VERSION}
+# linux/amd64 manifest lock for docker.io/library/python:3.12-slim-bookworm
+FROM --platform=linux/amd64 docker.io/library/python:3.12-slim-bookworm@sha256:9c47360a2a0355e2da18516d0b1c2126ec22c195d2185e97347c9d98398c5bef
 
 ARG CFS_SOURCE_COMMIT=unknown
 LABEL org.opencontainers.image.title="Collector Figures Chat Push Gateway" \
