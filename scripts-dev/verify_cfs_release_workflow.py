@@ -71,7 +71,7 @@ assert re.search(
     promotion_script,
 )
 assert not re.search(r"imagetools create\s+--tag", promotion_script)
-assert "containerimage.descriptor.digest" in promotion_script
+assert '."containerimage.descriptor".digest' in promotion_script
 assert 'test "$metadata_digest" = "$candidate_digest"' in promotion_script
 assert 'test "$raw_manifest_digest" = "$candidate_digest"' in promotion_script
 assert "refusing to overwrite" in promotion_script
