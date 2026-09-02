@@ -9,6 +9,9 @@ on:
 permissions:
   contents: read
 
+env:
+  CFS_CI_IMAGE: cfs-push-ci:${{ github.sha }}
+
 jobs:
   verify:
     runs-on: ubuntu-24.04
@@ -17,6 +20,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - name: Install locked dependencies
         run: |
           python -m pip install --disable-pip-version-check poetry==1.8.3
@@ -36,9 +40,9 @@ jobs:
         run: poetry run python -m twisted.trial tests
       - name: Verify formatting and static analysis
         run: |
-          poetry run black --check sygnal/webpushpushkin.py tests/test_webpush_cfs.py
-          poetry run ruff sygnal/webpushpushkin.py tests/test_webpush_cfs.py
-          poetry run python -m compileall -q sygnal
+          poetry run black --check sygnal/webpushpushkin.py tests/test_webpush_cfs.py scripts-dev/verify_cfs_release_workflow.py
+          poetry run ruff sygnal/webpushpushkin.py tests/test_webpush_cfs.py scripts-dev/verify_cfs_release_workflow.py
+          poetry run python -m compileall -q sygnal scripts-dev
       - name: Verify CFS runtime configuration
         run: |
           poetry run python scripts-dev/verify_cfs_release_workflow.py
@@ -55,3 +59,46 @@ jobs:
           ]
           print('CFS_PUSH_CONFIG_PASS')
           PY
+      - name: Build the complete Push image locally without publication
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ env.CFS_CI_IMAGE }}
+          build-args: CFS_SOURCE_COMMIT=${{ github.sha }}
+          provenance: false
+          sbom: false
+      - name: Verify the local Push image and resolved bases
+        run: |
+          test "$(docker image inspect "$CFS_CI_IMAGE" --format '{{.Config.User}}')" = "991:991"
+          test "$(docker image inspect "$CFS_CI_IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$GITHUB_SHA"
+          test "$(docker image inspect "$CFS_CI_IMAGE" --format '{{.Os}}/{{.Architecture}}')" = "linux/amd64"
+          test "$(docker image inspect "$CFS_CI_IMAGE" --format '{{json .Config.Healthcheck.Test}}')" != "null"
+          uv_digest="sha256:9aa60c50016c0485636ab9a830246a6ef3399aa4a8bab3d17ef4a2358fba2ca7"
+          python_digest="sha256:9c47360a2a0355e2da18516d0b1c2126ec22c195d2185e97347c9d98398c5bef"
+          docker buildx imagetools inspect --raw "ghcr.io/astral-sh/uv:python3.12-bookworm@$uv_digest" > UV-BASE-MANIFEST.json
+          docker buildx imagetools inspect --raw "docker.io/library/python:3.12-slim-bookworm@$python_digest" > PYTHON-BASE-MANIFEST.json
+          test "sha256:$(sha256sum UV-BASE-MANIFEST.json | cut -d' ' -f1)" = "$uv_digest"
+          test "sha256:$(sha256sum PYTHON-BASE-MANIFEST.json | cut -d' ' -f1)" = "$python_digest"
+          jq -n --arg uv "$uv_digest" --arg python "$python_digest" \
+            '{requirements: {image: "ghcr.io/astral-sh/uv:python3.12-bookworm", digest: $uv, platform: "linux/amd64"}, builder: {image: "ghcr.io/astral-sh/uv:python3.12-bookworm", digest: $uv, platform: "linux/amd64"}, runtime: {image: "docker.io/library/python:3.12-slim-bookworm", digest: $python, platform: "linux/amd64"}}' \
+            > PUSH-RESOLVED-BASE-DIGESTS.json
+          jq -e . PUSH-RESOLVED-BASE-DIGESTS.json >/dev/null
+          printf 'CFS_PUSH_LOCAL_DOCKER_BUILD_PASS user=991:991 platform=linux/amd64 revision=%s healthcheck=true resolved_bases=3 publication=0\n' "$GITHUB_SHA"
+      - name: Test digest-preserving promotion in a local Registry
+        run: bash scripts-dev/cfs-test-local-registry-promotion.sh "$CFS_CI_IMAGE"
+      - name: Verify focused secret scan and range diff
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          poetry run python scripts-dev/verify_cfs_release_workflow.py | tee CFS-PREFLIGHT-SECRET-SCAN.txt
+          grep -q 'actual_credentials=0' CFS-PREFLIGHT-SECRET-SCAN.txt
+          if [ -n "$PR_BASE_SHA" ]; then
+            git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"
+            git diff --check "$PR_BASE_SHA...$GITHUB_SHA"
+          else
+            git diff --check "$GITHUB_SHA^...$GITHUB_SHA"
+          fi
