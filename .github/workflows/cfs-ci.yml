@@ -17,6 +17,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -97,7 +99,6 @@ jobs:
           poetry run python scripts-dev/verify_cfs_release_workflow.py | tee CFS-PREFLIGHT-SECRET-SCAN.txt
           grep -q 'actual_credentials=0' CFS-PREFLIGHT-SECRET-SCAN.txt
           if [ -n "$PR_BASE_SHA" ]; then
-            git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"
             git diff --check "$PR_BASE_SHA...$GITHUB_SHA"
           else
             git diff --check "$GITHUB_SHA^...$GITHUB_SHA"
