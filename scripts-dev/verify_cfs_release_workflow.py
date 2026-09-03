@@ -65,14 +65,39 @@ def verify_strict_release_tag_admission(source: str) -> None:
 
     validate_block = source[validate_job_start:release_job_start]
     release_block = source[release_job_start:]
-    release_admission = release_block.find(
-        "- name: Revalidate formal release tag and record admission"
+    precheckout_validation = release_block.find(
+        "- name: Revalidate formal release tag before checkout"
     )
-    checkout = release_block.find("actions/checkout@")
+    checkout = release_block.find(
+        "- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1"
+    )
+    postcheckout_evidence = release_block.find(
+        "- name: Revalidate and record formal release tag admission evidence"
+    )
+    tool_download = release_block.find("- name: Install the pinned OCI tag inspector")
+    buildx = release_block.find("docker/setup-buildx-action@")
+    docker_build = release_block.find("- name: Build exact source locally")
     registry_login = release_block.find("docker/login-action")
+    cosign = release_block.find("sigstore/cosign-installer@")
+
+    assert (
+        0
+        <= precheckout_validation
+        < checkout
+        < postcheckout_evidence
+        < tool_download
+        < buildx
+        < docker_build
+        < registry_login
+        < cosign
+    )
+
+    precheckout_block = release_block[precheckout_validation:checkout]
+    checkout_block = release_block[checkout:postcheckout_evidence]
+    postcheckout_block = release_block[postcheckout_evidence:tool_download]
 
     assert 'tags: ["cfs-push-v*"]' in source
-    assert source.count(exact_release_tag_pattern_text) == 2
+    assert source.count(exact_release_tag_pattern_text) == 3
     assert "runs-on: ubuntu-24.04" in validate_block
     assert re.search(r"permissions:\n      contents: read\n    steps:", validate_block)
     assert not re.search(
@@ -82,20 +107,45 @@ def verify_strict_release_tag_admission(source: str) -> None:
     assert 'test "$GITHUB_REF_TYPE" = "tag"' in validate_block
     assert 'test "$GITHUB_REF" = "refs/tags/$GITHUB_REF_NAME"' in validate_block
     assert "needs: validate-release-tag" in release_block
-    assert 0 <= release_admission < checkout < registry_login
-    assert "RELEASE-TAG-ADMISSION.json" in release_block[:checkout]
-    assert "stable_three_component_version: true" in release_block
-    assert "prerelease_allowed: false" in release_block
-    assert "build_metadata_allowed: false" in release_block
-    assert "registry_mutations_before_validation: 0" in release_block
+
+    assert 'test "$GITHUB_REF_TYPE" = "tag"' in precheckout_block
+    assert 'test "$GITHUB_REF" = "refs/tags/$GITHUB_REF_NAME"' in precheckout_block
+    assert exact_release_tag_pattern_text in precheckout_block
+    assert not re.search(
+        r"RELEASE-TAG-ADMISSION|\.json|>\s*|\b(?:tee|touch|cp|mv)\b",
+        precheckout_block,
+    )
+
+    assert (
+        checkout_block.strip()
+        == "- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1"
+    )
+    assert not re.search(r"clean:\s*false|\bpath:", checkout_block)
+
+    assert 'test "$GITHUB_REF_TYPE" = "tag"' in postcheckout_block
+    assert 'test "$GITHUB_REF" = "refs/tags/$GITHUB_REF_NAME"' in postcheckout_block
+    assert exact_release_tag_pattern_text in postcheckout_block
+    assert re.search(r"> RELEASE-TAG-ADMISSION\.json", postcheckout_block)
+    assert "jq -e . RELEASE-TAG-ADMISSION.json >/dev/null" in postcheckout_block
+    assert "test -f RELEASE-TAG-ADMISSION.json" in postcheckout_block
+    assert "test ! -L RELEASE-TAG-ADMISSION.json" in postcheckout_block
+    assert "stable_three_component_version: true" in postcheckout_block
+    assert "prerelease_allowed: false" in postcheckout_block
+    assert "build_metadata_allowed: false" in postcheckout_block
+    assert "registry_mutations_before_validation: 0" in postcheckout_block
+
     assert re.search(
-        r"RELEASE-TAG-ADMISSION\.json[\s\S]*PREPUBLISH-SHA256SUMS\.txt",
+        r"sha256sum [^\n]*RELEASE-TAG-ADMISSION\.json > PREPUBLISH-SHA256SUMS\.txt",
         release_block,
     )
+    artifact_block = release_block[
+        release_block.index("- name: Upload complete release evidence") :
+    ]
     assert re.search(
         r"PREPUBLISH-SHA256SUMS\.txt\n            RELEASE-TAG-ADMISSION\.json",
-        release_block,
+        artifact_block,
     )
+    assert "if-no-files-found: error" in artifact_block
 
 
 for release_tag in valid_release_tags:
@@ -107,15 +157,28 @@ verify_strict_release_tag_admission(workflow)
 validate_job_start = workflow.index("  validate-release-tag:")
 release_job_start = workflow.index("  build-scan-publish:")
 validate_job_block = workflow[validate_job_start:release_job_start]
-release_admission_start = workflow.index(
-    "      - name: Revalidate formal release tag and record admission"
+precheckout_start = workflow.index(
+    "      - name: Revalidate formal release tag before checkout"
 )
 checkout_start = workflow.index("      - uses: actions/checkout@")
-release_admission_block = workflow[release_admission_start:checkout_start]
+postcheckout_start = workflow.index(
+    "      - name: Revalidate and record formal release tag admission evidence"
+)
+tool_download_start = workflow.index(
+    "      - name: Install the pinned OCI tag inspector"
+)
+source_gate_start = workflow.index(
+    "      - name: Verify release tag is the exact protected main commit"
+)
+precheckout_block = workflow[precheckout_start:checkout_start]
+checkout_block = workflow[checkout_start:postcheckout_start]
+postcheckout_block = workflow[postcheckout_start:tool_download_start]
+tool_download_block = workflow[tool_download_start:source_gate_start]
 weakened_release_workflows = (
     workflow.replace(validate_job_block, ""),
     workflow.replace("    needs: validate-release-tag\n", ""),
-    workflow.replace(release_admission_block, ""),
+    workflow.replace(precheckout_block, ""),
+    workflow.replace(postcheckout_block, ""),
     workflow.replace(exact_release_tag_pattern_text, r"^cfs-push-v.*$"),
     workflow.replace(exact_release_tag_pattern_text, r"^cfs-push-v"),
     workflow.replace(
@@ -137,12 +200,50 @@ weakened_release_workflows = (
         "    permissions:\n      contents: read\n    steps:",
         "    permissions:\n      contents: read\n      id-token: write\n    steps:",
     ),
-    workflow.replace(release_admission_block, "").replace(
+    workflow.replace(
+        precheckout_block,
+        precheckout_block.replace(
+            '          printf \'%s\' "$GITHUB_REF_NAME" | LC_ALL=C grep -Eq "$release_pattern"\n',
+            '          printf \'%s\' "$GITHUB_REF_NAME" | LC_ALL=C grep -Eq "$release_pattern"\n'
+            "          printf '{}' > RELEASE-TAG-ADMISSION.json\n",
+        ),
+    ),
+    workflow.replace(
+        postcheckout_block,
+        postcheckout_block.replace(
+            f"          release_pattern='{exact_release_tag_pattern_text}'\n", ""
+        ),
+    ),
+    workflow.replace(postcheckout_block, "").replace(
+        tool_download_block, f"{tool_download_block}{postcheckout_block}"
+    ),
+    workflow.replace(postcheckout_block, "").replace(
+        "      - name: Build exact source locally",
+        f"{postcheckout_block}      - name: Build exact source locally",
+    ),
+    workflow.replace(postcheckout_block, "").replace(
         "      - name: Publish only the run-scoped candidate tag",
-        f"{release_admission_block}      - name: Publish only the run-scoped candidate tag",
+        f"{postcheckout_block}      - name: Publish only the run-scoped candidate tag",
+    ),
+    workflow.replace(
+        checkout_block,
+        f"{checkout_block.rstrip()}\n        with:\n          clean: false\n",
+    ),
+    workflow.replace(
+        checkout_block,
+        f"{checkout_block.rstrip()}\n        with:\n          path: release-source\n",
+    ),
+    workflow.replace(
+        " OCI-INSPECTOR.json RELEASE-TAG-ADMISSION.json >", " OCI-INSPECTOR.json >"
+    ),
+    workflow.replace("            RELEASE-TAG-ADMISSION.json\n", ""),
+    workflow.replace(
+        "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+        "actions/checkout@v4",
     ),
 )
 for fixture in weakened_release_workflows:
+    assert fixture != workflow
     try:
         verify_strict_release_tag_admission(fixture)
     except AssertionError:
@@ -481,4 +582,14 @@ print(
     "validation_before_environment_release_job=true "
     "validation_before_registry_mutation=true invalid_tag_registry_mutations=0 "
     "real_invalid_git_tags_created=0"
+)
+print(
+    "CFS_RELEASE_ADMISSION_EVIDENCE_CHECKOUT_SURVIVAL_PASS "
+    "precheckout_tag_revalidation=true precheckout_workspace_evidence_files=0 "
+    "checkout_pinned=true checkout_clean_bypass=false "
+    "postcheckout_tag_revalidation=true postcheckout_admission_evidence=true "
+    "admission_evidence_before_tool_download=true "
+    "admission_evidence_before_registry_mutation=true "
+    "admission_evidence_in_checksum=true admission_evidence_in_artifact=true "
+    "real_release_workflow_runs=0"
 )
