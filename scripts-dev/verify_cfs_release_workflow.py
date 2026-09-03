@@ -21,12 +21,17 @@ integration_script = (
     root / "scripts-dev/cfs-test-local-registry-promotion.sh"
 ).read_text(encoding="utf-8")
 expected_concurrency_group = "cfs-push-immutable-release"
-release_tag_fixtures = ("cfs-push-v1.0.0", "cfs-push-v1.0.1")
+release_tag_fixtures = (
+    "cfs-push-v1.0.0",
+    "cfs-push-v1.0.1",
+    "cfs-push-v1.0.2",
+)
 
 
 def verify_release_single_flight(source: str) -> None:
     match = re.search(
-        r"^concurrency:\n  group: ([^\n]+)\n  cancel-in-progress: (true|false)\s*$",
+        r"^concurrency:\n  group: ([^\n]+)\n  queue: ([^\n]+)\n"
+        r"  cancel-in-progress: (true|false)\s*$",
         source,
         re.M,
     )
@@ -34,7 +39,9 @@ def verify_release_single_flight(source: str) -> None:
     assert len(re.findall(r"^concurrency:", source, re.M)) == 1
     assert source.index("concurrency:") < source.index("jobs:")
     assert match.group(1) == expected_concurrency_group
-    assert match.group(2) == "false"
+    assert match.group(2) == "max"
+    assert match.group(3) == "false"
+    assert "${{" not in match.group(2)
     assert (
         re.search(
             r"\$\{\{|ref|ref_name|sha|run_id|run_attempt|version|tag",
@@ -45,11 +52,50 @@ def verify_release_single_flight(source: str) -> None:
     )
 
     mapped_groups = tuple(expected_concurrency_group for _ in release_tag_fixtures)
-    assert mapped_groups == (expected_concurrency_group, expected_concurrency_group)
+    assert mapped_groups == (
+        expected_concurrency_group,
+        expected_concurrency_group,
+        expected_concurrency_group,
+    )
     assert len(set(mapped_groups)) == 1
 
 
 verify_release_single_flight(workflow)
+queue_fixtures = (
+    workflow.replace("  queue: max\n", ""),
+    workflow.replace("  queue: max", "  queue: single"),
+    workflow.replace("  queue: max", "  queue: 1"),
+    workflow.replace("  queue: max", "  queue: true"),
+    workflow.replace("  queue: max", "  queue: ${{ inputs.queue }}"),
+    workflow.replace("  cancel-in-progress: false", "  cancel-in-progress: true"),
+)
+job_only_concurrency_fixture = re.sub(
+    r"^concurrency:\n  group: [^\n]+\n  queue: [^\n]+\n"
+    r"  cancel-in-progress: [^\n]+\n\n",
+    "",
+    workflow,
+    count=1,
+    flags=re.M,
+)
+job_only_concurrency_fixture = re.sub(
+    r"^jobs:\n  build-scan-publish:",
+    "jobs:\n  build-scan-publish:\n"
+    "    concurrency:\n"
+    f"      group: {expected_concurrency_group}\n"
+    "      queue: max\n"
+    "      cancel-in-progress: false",
+    job_only_concurrency_fixture,
+    count=1,
+    flags=re.M,
+)
+for fixture in (*queue_fixtures, job_only_concurrency_fixture):
+    try:
+        verify_release_single_flight(fixture)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("invalid release queue fixture must be rejected")
+
 for dynamic_group in (
     "cfs-push-release-${{ github.ref_name }}",
     "cfs-push-release-${{ github.ref }}",
@@ -272,4 +318,10 @@ print(
     "CFS_RELEASE_SINGLE_FLIGHT_CONTRACT_PASS release_single_flight=true "
     "different_version_tags_same_group=true cross_tag_parallelism=false "
     "cancel_in_progress=false group=cfs-push-immutable-release"
+)
+print(
+    "CFS_RELEASE_QUEUE_PRESERVATION_CONTRACT_PASS release_single_flight=true "
+    "three_version_tags_same_group=true queue=max pending_capacity=100 "
+    "pending_replacement=false_within_capacity=true cross_tag_parallelism=false "
+    "cancel_in_progress=false"
 )
