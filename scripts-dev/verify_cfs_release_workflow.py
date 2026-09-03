@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 from pathlib import Path
+import hashlib
 import re
 
 
@@ -26,6 +27,128 @@ release_tag_fixtures = (
     "cfs-push-v1.0.1",
     "cfs-push-v1.0.2",
 )
+exact_release_tag_pattern_text = (
+    r"^cfs-push-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
+)
+exact_release_tag_pattern = re.compile(exact_release_tag_pattern_text)
+valid_release_tags = (
+    "cfs-push-v0.0.0",
+    "cfs-push-v0.1.0",
+    "cfs-push-v1.0.0",
+    "cfs-push-v12.34.56",
+)
+invalid_release_tags = (
+    "cfs-push-v",
+    "cfs-push-v1",
+    "cfs-push-v1.0",
+    "cfs-push-v1.0.0.0",
+    "cfs-push-v01.0.0",
+    "cfs-push-v1.00.0",
+    "cfs-push-v1.0.00",
+    "cfs-push-v1.0.0-rc.1",
+    "cfs-push-v1.0.0-beta.1",
+    "cfs-push-v1.0.0+build.1",
+    "cfs-push-v1.0.0x",
+    "cfs-push-v1.0.0/extra",
+    "cfs-web-v1.0.0",
+    "CFS-PUSH-v1.0.0",
+    " cfs-push-v1.0.0",
+    "cfs-push-v1.0.0 ",
+    "cfs-push-v1.0.0\n",
+)
+
+
+def verify_strict_release_tag_admission(source: str) -> None:
+    validate_job_start = source.find("  validate-release-tag:")
+    release_job_start = source.find("  build-scan-publish:")
+    assert 0 <= validate_job_start < release_job_start
+
+    validate_block = source[validate_job_start:release_job_start]
+    release_block = source[release_job_start:]
+    release_admission = release_block.find(
+        "- name: Revalidate formal release tag and record admission"
+    )
+    checkout = release_block.find("actions/checkout@")
+    registry_login = release_block.find("docker/login-action")
+
+    assert 'tags: ["cfs-push-v*"]' in source
+    assert source.count(exact_release_tag_pattern_text) == 2
+    assert "runs-on: ubuntu-24.04" in validate_block
+    assert re.search(r"permissions:\n      contents: read\n    steps:", validate_block)
+    assert not re.search(
+        r"packages:\s*write|id-token:\s*write|environment:|actions/checkout|docker|cosign|ghcr\.io",
+        validate_block,
+    )
+    assert 'test "$GITHUB_REF_TYPE" = "tag"' in validate_block
+    assert 'test "$GITHUB_REF" = "refs/tags/$GITHUB_REF_NAME"' in validate_block
+    assert "needs: validate-release-tag" in release_block
+    assert 0 <= release_admission < checkout < registry_login
+    assert "RELEASE-TAG-ADMISSION.json" in release_block[:checkout]
+    assert "stable_three_component_version: true" in release_block
+    assert "prerelease_allowed: false" in release_block
+    assert "build_metadata_allowed: false" in release_block
+    assert "registry_mutations_before_validation: 0" in release_block
+    assert re.search(
+        r"RELEASE-TAG-ADMISSION\.json[\s\S]*PREPUBLISH-SHA256SUMS\.txt",
+        release_block,
+    )
+    assert re.search(
+        r"PREPUBLISH-SHA256SUMS\.txt\n            RELEASE-TAG-ADMISSION\.json",
+        release_block,
+    )
+
+
+for release_tag in valid_release_tags:
+    assert exact_release_tag_pattern.fullmatch(release_tag), release_tag
+for release_tag in invalid_release_tags:
+    assert not exact_release_tag_pattern.fullmatch(release_tag), release_tag
+
+verify_strict_release_tag_admission(workflow)
+validate_job_start = workflow.index("  validate-release-tag:")
+release_job_start = workflow.index("  build-scan-publish:")
+validate_job_block = workflow[validate_job_start:release_job_start]
+release_admission_start = workflow.index(
+    "      - name: Revalidate formal release tag and record admission"
+)
+checkout_start = workflow.index("      - uses: actions/checkout@")
+release_admission_block = workflow[release_admission_start:checkout_start]
+weakened_release_workflows = (
+    workflow.replace(validate_job_block, ""),
+    workflow.replace("    needs: validate-release-tag\n", ""),
+    workflow.replace(release_admission_block, ""),
+    workflow.replace(exact_release_tag_pattern_text, r"^cfs-push-v.*$"),
+    workflow.replace(exact_release_tag_pattern_text, r"^cfs-push-v"),
+    workflow.replace(
+        exact_release_tag_pattern_text, r"^cfs-push-v[0-9]+\.[0-9]+\.[0-9]+$"
+    ),
+    workflow.replace(
+        exact_release_tag_pattern_text,
+        r"^cfs-push-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[0-9]+)?$",
+    ),
+    workflow.replace(
+        exact_release_tag_pattern_text,
+        r"^cfs-push-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+build\.[0-9]+)?$",
+    ),
+    workflow.replace(
+        "    permissions:\n      contents: read\n    steps:",
+        "    permissions:\n      contents: read\n      packages: write\n    steps:",
+    ),
+    workflow.replace(
+        "    permissions:\n      contents: read\n    steps:",
+        "    permissions:\n      contents: read\n      id-token: write\n    steps:",
+    ),
+    workflow.replace(release_admission_block, "").replace(
+        "      - name: Publish only the run-scoped candidate tag",
+        f"{release_admission_block}      - name: Publish only the run-scoped candidate tag",
+    ),
+)
+for fixture in weakened_release_workflows:
+    try:
+        verify_strict_release_tag_admission(fixture)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("weakened release tag admission fixture must be rejected")
 
 
 def verify_release_single_flight(source: str) -> None:
@@ -230,6 +353,14 @@ assert "inspect_error_fail_closed=true" in integration_script
 assert "malformed_digest_rejected=true" in integration_script
 assert "partial_version_tag=false" in integration_script
 assert "cleanup=true" in integration_script
+assert (
+    hashlib.sha256(promotion_script.encode()).hexdigest()
+    == "9221b65bae96a80781ba008209e0869bb706dcfe50e26ae7f445b41880be6a5f"
+)
+assert (
+    hashlib.sha256(integration_script.encode()).hexdigest()
+    == "dd0376e6e77543d8ce54531e7af1d3b610ac9534870854e934683c1aacd5904e"
+)
 assert re.search(r"permissions:\s*\n\s*contents: read", ci_workflow)
 assert not re.search(r"packages:\s*write|id-token:\s*write", ci_workflow)
 assert "push: false" in ci_workflow
@@ -275,20 +406,37 @@ assert (
     in base_lock
 )
 assert "linux/amd64" in base_lock
-assert "Before" in permission_plan
-assert "After" in permission_plan
+assert "APPLIED AND READ-BACK VERIFIED ON 2026-09-03" in permission_plan
+assert "Historical state before R3" in permission_plan
+assert "Applied state after R3" in permission_plan
 assert "cfs-push-v*" in permission_plan
 assert "Job-only release tag creator" in permission_plan
 assert "prevent self-review: `false`" in permission_plan
 assert "Future Technical Owner" in permission_plan
 assert "prevent self-review: `true`" in permission_plan
 assert "environment.name: cfs-push-release" in permission_plan
+assert "CFS Release Tag Creators" in permission_plan
+assert "cfs-release-tag-creators" in permission_plan
+assert "Team ID: `19325995`" in permission_plan
+assert (
+    "Ruleset: `Restrict cfs-push release tag creation` / ID `22177550`"
+    in permission_plan
+)
+assert "Ruleset: `Protect cfs-push release tags` / ID `21900094`" in permission_plan
+assert "coarse namespace filter" in permission_plan
+assert (
+    "authoritative Formal Release admission is the Runtime exact regex"
+    in permission_plan
+)
+assert exact_release_tag_pattern_text in permission_plan
+assert "Phase 1 accepts only stable `MAJOR.MINOR.PATCH`" in permission_plan
+assert "manually check the exact stable three-component format" in permission_plan
 assert "regctl v0.11.6" in permission_plan
 assert (
     "8e0e62a497fcdb8048d18aa927a139613176ba0531f412bc541044e28f9856bd"
     in permission_plan
 )
-assert "not applied" in permission_plan.lower()
+assert "not applied" not in permission_plan.lower()
 
 literal_secret_patterns = [
     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
@@ -324,4 +472,13 @@ print(
     "three_version_tags_same_group=true queue=max pending_capacity=100 "
     "pending_replacement=false_within_capacity=true cross_tag_parallelism=false "
     "cancel_in_progress=false"
+)
+print(
+    "CFS_STRICT_RELEASE_TAG_ADMISSION_CONTRACT_PASS "
+    "strict_release_tag_admission=true stable_three_component_version=true "
+    "leading_zero_rejected=true prerelease_rejected=true "
+    "build_metadata_rejected=true wrong_component_prefix_rejected=true "
+    "validation_before_environment_release_job=true "
+    "validation_before_registry_mutation=true invalid_tag_registry_mutations=0 "
+    "real_invalid_git_tags_created=0"
 )
