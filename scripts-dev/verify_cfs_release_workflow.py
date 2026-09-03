@@ -20,6 +20,56 @@ promotion_script = (root / "scripts-dev/cfs-promote-oci-tag.sh").read_text(
 integration_script = (
     root / "scripts-dev/cfs-test-local-registry-promotion.sh"
 ).read_text(encoding="utf-8")
+expected_concurrency_group = "cfs-push-immutable-release"
+release_tag_fixtures = ("cfs-push-v1.0.0", "cfs-push-v1.0.1")
+
+
+def verify_release_single_flight(source: str) -> None:
+    match = re.search(
+        r"^concurrency:\n  group: ([^\n]+)\n  cancel-in-progress: (true|false)\s*$",
+        source,
+        re.M,
+    )
+    assert match is not None, "release concurrency must be a workflow-level block"
+    assert len(re.findall(r"^concurrency:", source, re.M)) == 1
+    assert source.index("concurrency:") < source.index("jobs:")
+    assert match.group(1) == expected_concurrency_group
+    assert match.group(2) == "false"
+    assert (
+        re.search(
+            r"\$\{\{|ref|ref_name|sha|run_id|run_attempt|version|tag",
+            match.group(1),
+            re.I,
+        )
+        is None
+    )
+
+    mapped_groups = tuple(expected_concurrency_group for _ in release_tag_fixtures)
+    assert mapped_groups == (expected_concurrency_group, expected_concurrency_group)
+    assert len(set(mapped_groups)) == 1
+
+
+verify_release_single_flight(workflow)
+for dynamic_group in (
+    "cfs-push-release-${{ github.ref_name }}",
+    "cfs-push-release-${{ github.ref }}",
+    "cfs-push-release-${{ github.sha }}",
+    "cfs-push-release-${{ github.run_id }}",
+    "cfs-push-release-${{ github.run_attempt }}",
+    "cfs-push-release-${{ inputs.version }}",
+    "cfs-push-release-${{ inputs.tag }}",
+):
+    dynamic_fixture = workflow.replace(
+        f"  group: {expected_concurrency_group}", f"  group: {dynamic_group}"
+    )
+    try:
+        verify_release_single_flight(dynamic_fixture)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("dynamic release concurrency group must be rejected")
+
+
 source_gate = workflow.index("Verify release tag is the exact protected main commit")
 local_build = workflow.index("Build exact source locally")
 scan = workflow.index("Scan local image before publication")
@@ -217,4 +267,9 @@ print(
     "pair_preflight=true sha_first=true version_last=true inspect_error_fail_closed=true "
     "malformed_digest_rejected=true environment=cfs-push-release base_digests=true "
     "static_scope=black,ruff,compileall actual_credentials=0"
+)
+print(
+    "CFS_RELEASE_SINGLE_FLIGHT_CONTRACT_PASS release_single_flight=true "
+    "different_version_tags_same_group=true cross_tag_parallelism=false "
+    "cancel_in_progress=false group=cfs-push-immutable-release"
 )
