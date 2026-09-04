@@ -3,26 +3,593 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 from pathlib import Path
+import hashlib
+import re
 
 
-workflow = (Path(__file__).parents[1] / ".github/workflows/cfs-release.yml").read_text(
+root = Path(__file__).parents[1]
+workflow = (root / ".github/workflows/cfs-release.yml").read_text(encoding="utf-8")
+ci_workflow = (root / ".github/workflows/cfs-ci.yml").read_text(encoding="utf-8")
+dockerfile = (root / "docker/Dockerfile").read_text(encoding="utf-8")
+base_lock = (root / "docs/CFS-BASE-IMAGE-LOCK.md").read_text(encoding="utf-8")
+permission_plan = (root / "docs/CFS-RELEASE-PERMISSIONS-PLAN.md").read_text(
     encoding="utf-8"
 )
+promotion_script = (root / "scripts-dev/cfs-promote-oci-tag.sh").read_text(
+    encoding="utf-8"
+)
+integration_script = (
+    root / "scripts-dev/cfs-test-local-registry-promotion.sh"
+).read_text(encoding="utf-8")
+expected_concurrency_group = "cfs-push-immutable-release"
+release_tag_fixtures = (
+    "cfs-push-v1.0.0",
+    "cfs-push-v1.0.1",
+    "cfs-push-v1.0.2",
+)
+exact_release_tag_pattern_text = (
+    r"^cfs-push-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
+)
+exact_release_tag_pattern = re.compile(exact_release_tag_pattern_text)
+valid_release_tags = (
+    "cfs-push-v0.0.0",
+    "cfs-push-v0.1.0",
+    "cfs-push-v1.0.0",
+    "cfs-push-v12.34.56",
+)
+invalid_release_tags = (
+    "cfs-push-v",
+    "cfs-push-v1",
+    "cfs-push-v1.0",
+    "cfs-push-v1.0.0.0",
+    "cfs-push-v01.0.0",
+    "cfs-push-v1.00.0",
+    "cfs-push-v1.0.00",
+    "cfs-push-v1.0.0-rc.1",
+    "cfs-push-v1.0.0-beta.1",
+    "cfs-push-v1.0.0+build.1",
+    "cfs-push-v1.0.0x",
+    "cfs-push-v1.0.0/extra",
+    "cfs-web-v1.0.0",
+    "CFS-PUSH-v1.0.0",
+    " cfs-push-v1.0.0",
+    "cfs-push-v1.0.0 ",
+    "cfs-push-v1.0.0\n",
+)
+
+
+def verify_strict_release_tag_admission(source: str) -> None:
+    validate_job_start = source.find("  validate-release-tag:")
+    release_job_start = source.find("  build-scan-publish:")
+    assert 0 <= validate_job_start < release_job_start
+
+    validate_block = source[validate_job_start:release_job_start]
+    release_block = source[release_job_start:]
+    precheckout_validation = release_block.find(
+        "- name: Revalidate formal release tag before checkout"
+    )
+    checkout = release_block.find(
+        "- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1"
+    )
+    postcheckout_evidence = release_block.find(
+        "- name: Revalidate and record formal release tag admission evidence"
+    )
+    tool_download = release_block.find("- name: Install the pinned OCI tag inspector")
+    buildx = release_block.find("docker/setup-buildx-action@")
+    docker_build = release_block.find("- name: Build exact source locally")
+    registry_login = release_block.find("docker/login-action")
+    cosign = release_block.find("sigstore/cosign-installer@")
+
+    assert (
+        0
+        <= precheckout_validation
+        < checkout
+        < postcheckout_evidence
+        < tool_download
+        < buildx
+        < docker_build
+        < registry_login
+        < cosign
+    )
+
+    precheckout_block = release_block[precheckout_validation:checkout]
+    checkout_block = release_block[checkout:postcheckout_evidence]
+    postcheckout_block = release_block[postcheckout_evidence:tool_download]
+
+    assert 'tags: ["cfs-push-v*"]' in source
+    assert source.count(exact_release_tag_pattern_text) == 3
+    assert "runs-on: ubuntu-24.04" in validate_block
+    assert re.search(r"permissions:\n      contents: read\n    steps:", validate_block)
+    assert not re.search(
+        r"packages:\s*write|id-token:\s*write|environment:|actions/checkout|docker|cosign|ghcr\.io",
+        validate_block,
+    )
+    assert 'test "$GITHUB_REF_TYPE" = "tag"' in validate_block
+    assert 'test "$GITHUB_REF" = "refs/tags/$GITHUB_REF_NAME"' in validate_block
+    assert "needs: validate-release-tag" in release_block
+
+    assert 'test "$GITHUB_REF_TYPE" = "tag"' in precheckout_block
+    assert 'test "$GITHUB_REF" = "refs/tags/$GITHUB_REF_NAME"' in precheckout_block
+    assert exact_release_tag_pattern_text in precheckout_block
+    assert not re.search(
+        r"RELEASE-TAG-ADMISSION|\.json|>\s*|\b(?:tee|touch|cp|mv)\b",
+        precheckout_block,
+    )
+
+    assert (
+        checkout_block.strip()
+        == "- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1"
+    )
+    assert not re.search(r"clean:\s*false|\bpath:", checkout_block)
+
+    assert 'test "$GITHUB_REF_TYPE" = "tag"' in postcheckout_block
+    assert 'test "$GITHUB_REF" = "refs/tags/$GITHUB_REF_NAME"' in postcheckout_block
+    assert exact_release_tag_pattern_text in postcheckout_block
+    assert re.search(r"> RELEASE-TAG-ADMISSION\.json", postcheckout_block)
+    assert "jq -e . RELEASE-TAG-ADMISSION.json >/dev/null" in postcheckout_block
+    assert "test -f RELEASE-TAG-ADMISSION.json" in postcheckout_block
+    assert "test ! -L RELEASE-TAG-ADMISSION.json" in postcheckout_block
+    assert "stable_three_component_version: true" in postcheckout_block
+    assert "prerelease_allowed: false" in postcheckout_block
+    assert "build_metadata_allowed: false" in postcheckout_block
+    assert "registry_mutations_before_validation: 0" in postcheckout_block
+
+    assert re.search(
+        r"sha256sum [^\n]*RELEASE-TAG-ADMISSION\.json > PREPUBLISH-SHA256SUMS\.txt",
+        release_block,
+    )
+    artifact_block = release_block[
+        release_block.index("- name: Upload complete release evidence") :
+    ]
+    assert re.search(
+        r"PREPUBLISH-SHA256SUMS\.txt\n            RELEASE-TAG-ADMISSION\.json",
+        artifact_block,
+    )
+    assert "if-no-files-found: error" in artifact_block
+
+
+for release_tag in valid_release_tags:
+    assert exact_release_tag_pattern.fullmatch(release_tag), release_tag
+for release_tag in invalid_release_tags:
+    assert not exact_release_tag_pattern.fullmatch(release_tag), release_tag
+
+verify_strict_release_tag_admission(workflow)
+validate_job_start = workflow.index("  validate-release-tag:")
+release_job_start = workflow.index("  build-scan-publish:")
+validate_job_block = workflow[validate_job_start:release_job_start]
+precheckout_start = workflow.index(
+    "      - name: Revalidate formal release tag before checkout"
+)
+checkout_start = workflow.index("      - uses: actions/checkout@")
+postcheckout_start = workflow.index(
+    "      - name: Revalidate and record formal release tag admission evidence"
+)
+tool_download_start = workflow.index(
+    "      - name: Install the pinned OCI tag inspector"
+)
+source_gate_start = workflow.index(
+    "      - name: Verify release tag is the exact protected main commit"
+)
+precheckout_block = workflow[precheckout_start:checkout_start]
+checkout_block = workflow[checkout_start:postcheckout_start]
+postcheckout_block = workflow[postcheckout_start:tool_download_start]
+tool_download_block = workflow[tool_download_start:source_gate_start]
+weakened_release_workflows = (
+    workflow.replace(validate_job_block, ""),
+    workflow.replace("    needs: validate-release-tag\n", ""),
+    workflow.replace(precheckout_block, ""),
+    workflow.replace(postcheckout_block, ""),
+    workflow.replace(exact_release_tag_pattern_text, r"^cfs-push-v.*$"),
+    workflow.replace(exact_release_tag_pattern_text, r"^cfs-push-v"),
+    workflow.replace(
+        exact_release_tag_pattern_text, r"^cfs-push-v[0-9]+\.[0-9]+\.[0-9]+$"
+    ),
+    workflow.replace(
+        exact_release_tag_pattern_text,
+        r"^cfs-push-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[0-9]+)?$",
+    ),
+    workflow.replace(
+        exact_release_tag_pattern_text,
+        r"^cfs-push-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+build\.[0-9]+)?$",
+    ),
+    workflow.replace(
+        "    permissions:\n      contents: read\n    steps:",
+        "    permissions:\n      contents: read\n      packages: write\n    steps:",
+    ),
+    workflow.replace(
+        "    permissions:\n      contents: read\n    steps:",
+        "    permissions:\n      contents: read\n      id-token: write\n    steps:",
+    ),
+    workflow.replace(
+        precheckout_block,
+        precheckout_block.replace(
+            '          printf \'%s\' "$GITHUB_REF_NAME" | LC_ALL=C grep -Eq "$release_pattern"\n',
+            '          printf \'%s\' "$GITHUB_REF_NAME" | LC_ALL=C grep -Eq "$release_pattern"\n'
+            "          printf '{}' > RELEASE-TAG-ADMISSION.json\n",
+        ),
+    ),
+    workflow.replace(
+        postcheckout_block,
+        postcheckout_block.replace(
+            f"          release_pattern='{exact_release_tag_pattern_text}'\n", ""
+        ),
+    ),
+    workflow.replace(postcheckout_block, "").replace(
+        tool_download_block, f"{tool_download_block}{postcheckout_block}"
+    ),
+    workflow.replace(postcheckout_block, "").replace(
+        "      - name: Build exact source locally",
+        f"{postcheckout_block}      - name: Build exact source locally",
+    ),
+    workflow.replace(postcheckout_block, "").replace(
+        "      - name: Publish only the run-scoped candidate tag",
+        f"{postcheckout_block}      - name: Publish only the run-scoped candidate tag",
+    ),
+    workflow.replace(
+        checkout_block,
+        f"{checkout_block.rstrip()}\n        with:\n          clean: false\n",
+    ),
+    workflow.replace(
+        checkout_block,
+        f"{checkout_block.rstrip()}\n        with:\n          path: release-source\n",
+    ),
+    workflow.replace(
+        " OCI-INSPECTOR.json RELEASE-TAG-ADMISSION.json >", " OCI-INSPECTOR.json >"
+    ),
+    workflow.replace("            RELEASE-TAG-ADMISSION.json\n", ""),
+    workflow.replace(
+        "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+        "actions/checkout@v4",
+    ),
+)
+for fixture in weakened_release_workflows:
+    assert fixture != workflow
+    try:
+        verify_strict_release_tag_admission(fixture)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("weakened release tag admission fixture must be rejected")
+
+
+def verify_release_single_flight(source: str) -> None:
+    match = re.search(
+        r"^concurrency:\n  group: ([^\n]+)\n  queue: ([^\n]+)\n"
+        r"  cancel-in-progress: (true|false)\s*$",
+        source,
+        re.M,
+    )
+    assert match is not None, "release concurrency must be a workflow-level block"
+    assert len(re.findall(r"^concurrency:", source, re.M)) == 1
+    assert source.index("concurrency:") < source.index("jobs:")
+    assert match.group(1) == expected_concurrency_group
+    assert match.group(2) == "max"
+    assert match.group(3) == "false"
+    assert "${{" not in match.group(2)
+    assert (
+        re.search(
+            r"\$\{\{|ref|ref_name|sha|run_id|run_attempt|version|tag",
+            match.group(1),
+            re.I,
+        )
+        is None
+    )
+
+    mapped_groups = tuple(expected_concurrency_group for _ in release_tag_fixtures)
+    assert mapped_groups == (
+        expected_concurrency_group,
+        expected_concurrency_group,
+        expected_concurrency_group,
+    )
+    assert len(set(mapped_groups)) == 1
+
+
+verify_release_single_flight(workflow)
+queue_fixtures = (
+    workflow.replace("  queue: max\n", ""),
+    workflow.replace("  queue: max", "  queue: single"),
+    workflow.replace("  queue: max", "  queue: 1"),
+    workflow.replace("  queue: max", "  queue: true"),
+    workflow.replace("  queue: max", "  queue: ${{ inputs.queue }}"),
+    workflow.replace("  cancel-in-progress: false", "  cancel-in-progress: true"),
+)
+job_only_concurrency_fixture = re.sub(
+    r"^concurrency:\n  group: [^\n]+\n  queue: [^\n]+\n"
+    r"  cancel-in-progress: [^\n]+\n\n",
+    "",
+    workflow,
+    count=1,
+    flags=re.M,
+)
+job_only_concurrency_fixture = re.sub(
+    r"^jobs:\n  build-scan-publish:",
+    "jobs:\n  build-scan-publish:\n"
+    "    concurrency:\n"
+    f"      group: {expected_concurrency_group}\n"
+    "      queue: max\n"
+    "      cancel-in-progress: false",
+    job_only_concurrency_fixture,
+    count=1,
+    flags=re.M,
+)
+for fixture in (*queue_fixtures, job_only_concurrency_fixture):
+    try:
+        verify_release_single_flight(fixture)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("invalid release queue fixture must be rejected")
+
+for dynamic_group in (
+    "cfs-push-release-${{ github.ref_name }}",
+    "cfs-push-release-${{ github.ref }}",
+    "cfs-push-release-${{ github.sha }}",
+    "cfs-push-release-${{ github.run_id }}",
+    "cfs-push-release-${{ github.run_attempt }}",
+    "cfs-push-release-${{ inputs.version }}",
+    "cfs-push-release-${{ inputs.tag }}",
+):
+    dynamic_fixture = workflow.replace(
+        f"  group: {expected_concurrency_group}", f"  group: {dynamic_group}"
+    )
+    try:
+        verify_release_single_flight(dynamic_fixture)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("dynamic release concurrency group must be rejected")
+
+
+source_gate = workflow.index("Verify release tag is the exact protected main commit")
 local_build = workflow.index("Build exact source locally")
 scan = workflow.index("Scan local image before publication")
 provenance = workflow.index("Create and verify prepublication provenance")
+main_recheck = workflow.index("Reverify protected main before any registry mutation")
 login = workflow.index("docker/login-action")
-publish = workflow.index("Publish the already-scanned local image")
+candidate = workflow.index("Publish only the run-scoped candidate tag")
+sign = workflow.index("Sign, attest and verify the candidate digest")
+promotion_main_recheck = workflow.index(
+    "Reverify protected main before formal tag promotion"
+)
+promote = workflow.index("Promote the verified digest without overwriting formal tags")
+pair_inspect_sha = promotion_script.index('inspect_tag "SHA"')
+pair_inspect_version = promotion_script.index('inspect_tag "VERSION"')
+sha_mismatch_gate = promotion_script.index("sha tag points to a different digest")
+version_mismatch_gate = promotion_script.index(
+    "version tag points to a different digest"
+)
+sha_write = promotion_script.index('promote_missing_tag "SHA"')
+version_write = promotion_script.index('promote_missing_tag "TAG"')
 
-assert local_build < scan < provenance < login < publish
+assert (
+    source_gate
+    < local_build
+    < scan
+    < provenance
+    < main_recheck
+    < login
+    < candidate
+    < sign
+    < promotion_main_recheck
+    < promote
+)
 assert "load: true" in workflow
 assert "push: false" in workflow
 assert "push: true" not in workflow
+assert re.search(r"environment:\s*\n\s*name:\s*cfs-push-release", workflow)
 assert "format: spdx-json" in workflow
 assert "format: cyclonedx" in workflow
-assert 'test "$tag_digest" = "$sha_digest"' in workflow
+assert "refs/remotes/origin/main^{commit}" in workflow
+assert 'test "$tag_commit" = "$main_commit"' in workflow
+assert (
+    "CANDIDATE_TAG: candidate-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}"
+    in workflow
+)
 assert "cosign sign --yes" in workflow
 assert "cosign verify-attestation --type slsaprovenance" in workflow
+assert '--certificate-identity "$CERTIFICATE_IDENTITY"' in workflow
+assert "certificate-identity-regexp" not in workflow
+assert (
+    "CERTIFICATE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/"
+    "cfs-release.yml@refs/tags/${{ github.ref_name }}" in workflow
+)
+assert workflow.count("bash scripts-dev/cfs-promote-oci-tag.sh") == 1
+assert '"$IMAGE" "$GITHUB_REF_NAME" "sha-$GITHUB_SHA" "$digest" .' in workflow
+assert "docker buildx imagetools create" not in workflow
+assert "if docker buildx imagetools inspect" not in workflow
+assert "CFS_REGCTL_VERSION: v0.11.6" in workflow
+assert (
+    "CFS_REGCTL_SHA256: 8e0e62a497fcdb8048d18aa927a139613176ba0531f412bc541044e28f9856bd"
+    in workflow
+)
+assert "sha256sum -c -" in workflow
+assert "OCI-INSPECTOR.json" in workflow
+assert 'test "${#digest}" -eq 71' in workflow
+assert "^sha256:[0-9a-f]{64}$" in workflow
+assert re.search(
+    r"docker buildx imagetools create \\\n\s*--prefer-index=false \\\n\s*--metadata-file",
+    promotion_script,
+)
+assert not re.search(r"imagetools create\s+--tag", promotion_script)
+assert '."containerimage.descriptor".digest' in promotion_script
+assert "^sha256:[0-9a-f]{64}$" in promotion_script
+assert "MANIFEST_UNKNOWN" in promotion_script
+assert "manifest unknown" in promotion_script
+assert 'manifest head "$ref"' in promotion_script
+assert "manifest head --format" not in promotion_script
+assert "DEFINITELY_NOT_FOUND" in promotion_script
+assert 'INSPECT_STATE="ERROR"' in promotion_script
+assert "formal tag pair preflight failed before writes" in promotion_script
+assert (
+    0
+    <= pair_inspect_sha
+    < pair_inspect_version
+    < sha_mismatch_gate
+    < version_mismatch_gate
+    < sha_write
+    < version_write
+)
+assert "CFS_OCI_FAIL_BEFORE_VERSION_WRITE" in promotion_script
+assert re.search(r"partial_version_tag:\s*false", promotion_script)
+assert (
+    "registry:2@sha256:46faa9a1ae6813194b53921a370f2f4f8c5e1aae228a89bceafef5847a6a3278"
+    in integration_script
+)
+assert "127.0.0.1:5000:5000" in integration_script
+assert 'repository_prefix="127.0.0.1:5000/' in integration_script
+assert 'repository_prefix="localhost:5000/' not in integration_script
+assert "# A: both formal tags are absent" in integration_script
+assert "# B: both formal tags already exist" in integration_script
+assert "# C: SHA exists at a different digest" in integration_script
+assert "# D: version exists at a different digest" in integration_script
+assert "# E: SHA can be created" in integration_script
+assert "# F: a non-not-found inspect error" in integration_script
+assert "# G: every malformed digest" in integration_script
+assert "# H: destroy the localhost Registry" in integration_script
+assert "CFS_OCI_INSPECT_OVERRIDE" in integration_script
+assert "pair_preflight=true" in integration_script
+assert "sha_first=true" in integration_script
+assert "version_last=true" in integration_script
+assert "inspect_error_fail_closed=true" in integration_script
+assert "malformed_digest_rejected=true" in integration_script
+assert "partial_version_tag=false" in integration_script
+assert "cleanup=true" in integration_script
+assert (
+    hashlib.sha256(promotion_script.encode()).hexdigest()
+    == "9221b65bae96a80781ba008209e0869bb706dcfe50e26ae7f445b41880be6a5f"
+)
+assert (
+    hashlib.sha256(integration_script.encode()).hexdigest()
+    == "dd0376e6e77543d8ce54531e7af1d3b610ac9534870854e934683c1aacd5904e"
+)
+assert re.search(r"permissions:\s*\n\s*contents: read", ci_workflow)
+assert not re.search(r"packages:\s*write|id-token:\s*write", ci_workflow)
+assert "push: false" in ci_workflow
+assert "CFS_REGCTL_VERSION: v0.11.6" in ci_workflow
+assert (
+    "CFS_REGCTL_SHA256: 8e0e62a497fcdb8048d18aa927a139613176ba0531f412bc541044e28f9856bd"
+    in ci_workflow
+)
+assert "sha256sum -c -" in ci_workflow
+assert "CFS_PUSH_LOCAL_DOCKER_BUILD_PASS" in ci_workflow
+assert "cfs-test-local-registry-promotion.sh" in ci_workflow
+assert (
+    "poetry run black --check sygnal/webpushpushkin.py tests/test_webpush_cfs.py "
+    "scripts-dev/verify_cfs_release_workflow.py" in ci_workflow
+)
+assert (
+    "poetry run ruff sygnal/webpushpushkin.py tests/test_webpush_cfs.py "
+    "scripts-dev/verify_cfs_release_workflow.py" in ci_workflow
+)
+assert "poetry run python -m compileall -q sygnal scripts-dev" in ci_workflow
+assert 'docker tag "$LOCAL_IMAGE" "$IMAGE:$GITHUB_REF_NAME"' not in workflow[:promote]
 assert "PREPUBLISH-SHA256SUMS.txt" in workflow
 
-print("CFS_PUSH_RELEASE_WORKFLOW_PASS scan_before_publish=true")
+uv_lock = (
+    "ghcr.io/astral-sh/uv:python3.12-bookworm@"
+    "sha256:9aa60c50016c0485636ab9a830246a6ef3399aa4a8bab3d17ef4a2358fba2ca7"
+)
+python_lock = (
+    "docker.io/library/python:3.12-slim-bookworm@"
+    "sha256:9c47360a2a0355e2da18516d0b1c2126ec22c195d2185e97347c9d98398c5bef"
+)
+assert dockerfile.count(uv_lock) == 2
+assert dockerfile.count(python_lock) == 1
+assert dockerfile.count("FROM --platform=linux/amd64") == 3
+assert "ghcr.io/astral-sh/uv:python3.12-bookworm" in base_lock
+assert (
+    "sha256:9aa60c50016c0485636ab9a830246a6ef3399aa4a8bab3d17ef4a2358fba2ca7"
+    in base_lock
+)
+assert "docker.io/library/python:3.12-slim-bookworm" in base_lock
+assert (
+    "sha256:9c47360a2a0355e2da18516d0b1c2126ec22c195d2185e97347c9d98398c5bef"
+    in base_lock
+)
+assert "linux/amd64" in base_lock
+assert "APPLIED AND READ-BACK VERIFIED ON 2026-09-03" in permission_plan
+assert "Historical state before R3" in permission_plan
+assert "Applied state after R3" in permission_plan
+assert "cfs-push-v*" in permission_plan
+assert "Job-only release tag creator" in permission_plan
+assert "prevent self-review: `false`" in permission_plan
+assert "Future Technical Owner" in permission_plan
+assert "prevent self-review: `true`" in permission_plan
+assert "environment.name: cfs-push-release" in permission_plan
+assert "CFS Release Tag Creators" in permission_plan
+assert "cfs-release-tag-creators" in permission_plan
+assert "Team ID: `19325995`" in permission_plan
+assert (
+    "Ruleset: `Restrict cfs-push release tag creation` / ID `22177550`"
+    in permission_plan
+)
+assert "Ruleset: `Protect cfs-push release tags` / ID `21900094`" in permission_plan
+assert "coarse namespace filter" in permission_plan
+assert (
+    "authoritative Formal Release admission is the Runtime exact regex"
+    in permission_plan
+)
+assert exact_release_tag_pattern_text in permission_plan
+assert "Phase 1 accepts only stable `MAJOR.MINOR.PATCH`" in permission_plan
+assert "manually check the exact stable three-component format" in permission_plan
+assert "regctl v0.11.6" in permission_plan
+assert (
+    "8e0e62a497fcdb8048d18aa927a139613176ba0531f412bc541044e28f9856bd"
+    in permission_plan
+)
+assert "not applied" not in permission_plan.lower()
+
+literal_secret_patterns = [
+    re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
+    re.compile(r"(?:github_pat_|gh[pousr]_)[A-Za-z0-9_]{20,}"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
+    re.compile(r"Authorization\s*:\s*Bearer\s+[A-Za-z0-9._~+/-]{12,}", re.I),
+]
+for source in (
+    workflow,
+    ci_workflow,
+    dockerfile,
+    base_lock,
+    permission_plan,
+    promotion_script,
+    integration_script,
+):
+    assert all(pattern.search(source) is None for pattern in literal_secret_patterns)
+
+print(
+    "CFS_PUSH_RELEASE_WORKFLOW_R2_PASS main_gate=true candidate_first=true "
+    "exact_identity=true prefer_index_false=true metadata_raw_candidate_equal=true "
+    "pair_preflight=true sha_first=true version_last=true inspect_error_fail_closed=true "
+    "malformed_digest_rejected=true environment=cfs-push-release base_digests=true "
+    "static_scope=black,ruff,compileall actual_credentials=0"
+)
+print(
+    "CFS_RELEASE_SINGLE_FLIGHT_CONTRACT_PASS release_single_flight=true "
+    "different_version_tags_same_group=true cross_tag_parallelism=false "
+    "cancel_in_progress=false group=cfs-push-immutable-release"
+)
+print(
+    "CFS_RELEASE_QUEUE_PRESERVATION_CONTRACT_PASS release_single_flight=true "
+    "three_version_tags_same_group=true queue=max pending_capacity=100 "
+    "pending_replacement=false_within_capacity=true cross_tag_parallelism=false "
+    "cancel_in_progress=false"
+)
+print(
+    "CFS_STRICT_RELEASE_TAG_ADMISSION_CONTRACT_PASS "
+    "strict_release_tag_admission=true stable_three_component_version=true "
+    "leading_zero_rejected=true prerelease_rejected=true "
+    "build_metadata_rejected=true wrong_component_prefix_rejected=true "
+    "validation_before_environment_release_job=true "
+    "validation_before_registry_mutation=true invalid_tag_registry_mutations=0 "
+    "real_invalid_git_tags_created=0"
+)
+print(
+    "CFS_RELEASE_ADMISSION_EVIDENCE_CHECKOUT_SURVIVAL_PASS "
+    "precheckout_tag_revalidation=true precheckout_workspace_evidence_files=0 "
+    "checkout_pinned=true checkout_clean_bypass=false "
+    "postcheckout_tag_revalidation=true postcheckout_admission_evidence=true "
+    "admission_evidence_before_tool_download=true "
+    "admission_evidence_before_registry_mutation=true "
+    "admission_evidence_in_checksum=true admission_evidence_in_artifact=true "
+    "real_release_workflow_runs=0"
+)
