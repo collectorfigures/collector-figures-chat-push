@@ -16,14 +16,19 @@ The original scan contained 90 High/Critical package records across Web/Push;
 these were not 90 independently exploitable defects.
 
 Runtime package updates are limited to the affected existing dependency graph:
-Twisted 26.4.0 (stable, not 26.4.0rc2), aiohttp 3.14.3, cryptography 49.0.0,
+Twisted 26.4.0 (stable, not 26.4.0rc2), aiohttp 3.14.3, cryptography 50.0.0,
 PyJWT 2.13.0, pyasn1 0.6.4, thrift 0.24.0, tornado 6.5.8, urllib3 2.7.0,
-and setuptools 78.1.1. These versions correspond to the recorded advisory fix
+and setuptools 81.0.0. These versions correspond to the recorded advisory fix
 floors. The separate remote Dependabot PR is not merged or modified.
 
-pyOpenSSL 26.3.0 is the first 26.x stable release whose declared dependency range
-accepts cryptography 49.0.0: 26.0/26.1/26.2 cap it below 47/48/49 respectively.
-26.4.0 exists but is not needed for that compatibility constraint.
+The first locally built candidate used cryptography 49.0.0 / pyOpenSSL 26.3.0 /
+setuptools 78.1.1. The freshly obtained 2026-09-05 07:05 UTC vulnerability DB
+still found CVE-2026-69247 and two vulnerable vendored setuptools packages.
+The preserved first-image scan therefore failed the unchanged security gate.
+The minimum fixed cryptography 50.0.0 needs pyOpenSSL 26.4.0 (declared range
+cryptography >=49,<51). Official setuptools wheels show 80.9.0 still vendors
+wheel 0.45.1, while 81.0.0 vendors fixed wheel 0.46.3 and jaraco.context 6.1.0;
+82.x is not necessary. Exact official wheel hashes and metadata are retained.
 The package Python floor moves to 3.10 because urllib3 2.7.0 requires it; the
 actual CFS image remains Python 3.12/linux-amd64. No Python 3.8 support is claimed.
 
