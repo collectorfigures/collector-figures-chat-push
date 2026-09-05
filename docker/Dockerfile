@@ -93,6 +93,12 @@ RUN \
 # linux/amd64 manifest lock for docker.io/library/python:3.12-slim-bookworm
 FROM --platform=linux/amd64 docker.io/library/python:3.12-slim-bookworm@sha256:9c47360a2a0355e2da18516d0b1c2126ec22c195d2185e97347c9d98398c5bef
 
+# Debian bookworm-security fix available at the 2026-09-05 candidate review.
+# Other unresolved scanner records are not silently ignored or waived.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends --only-upgrade libpcre2-8-0=10.42-1+deb12u1 \
+  && rm -rf /var/lib/apt/lists/*
+
 ARG CFS_SOURCE_COMMIT=unknown
 LABEL org.opencontainers.image.title="Collector Figures Chat Push Gateway" \
       org.opencontainers.image.source="https://github.com/collectorfigures/collector-figures-chat-push" \

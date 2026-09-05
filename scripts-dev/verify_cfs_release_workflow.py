@@ -10,6 +10,60 @@ import re
 root = Path(__file__).parents[1]
 workflow = (root / ".github/workflows/cfs-release.yml").read_text(encoding="utf-8")
 ci_workflow = (root / ".github/workflows/cfs-ci.yml").read_text(encoding="utf-8")
+release_evidence_guard = (
+    root / "scripts-dev/cfs-verify-release-evidence.sh"
+).read_text(encoding="utf-8")
+
+
+def verify_evidence_stages(source):
+    for stage, count in {"local": 2, "bind": 1, "candidate": 1, "signed": 2}.items():
+        assert (
+            source.count(f"bash scripts-dev/cfs-verify-release-evidence.sh {stage}\n")
+            == count
+        )
+    assert not re.search(r">>\s*PREPUBLISH-SHA256SUMS\.txt", source)
+    assert (
+        "LOCAL-IMAGE-SHA256.txt OCI-INSPECTOR.json RELEASE-TAG-ADMISSION.json RELEASE-SOURCE.json > PREPUBLISH-SHA256SUMS.txt"
+        in source
+    )
+    assert re.search(r"cfs-verify-release-evidence\.sh local\s+docker tag", source)
+    assert re.search(r"cfs-verify-release-evidence\.sh candidate\s+cosign sign", source)
+    assert re.search(
+        r"cfs-verify-release-evidence\.sh signed\s+bash scripts-dev/cfs-promote-oci-tag\.sh",
+        source,
+    )
+    for filename in [
+        "CANDIDATE-SHA256SUMS.txt",
+        "SIGNATURES-SHA256SUMS.txt",
+        "RELEASE-SHA256SUMS.txt",
+        "OCI-PLATFORM-MANIFEST.json",
+        "OCI-DIGEST-BINDING.json",
+    ]:
+        assert filename in source[source.index("Upload complete release evidence") :]
+
+
+verify_evidence_stages(workflow)
+for evidence_stage in ["local", "candidate", "signed"]:
+    try:
+        verify_evidence_stages(
+            workflow.replace(
+                f"bash scripts-dev/cfs-verify-release-evidence.sh {evidence_stage}\n",
+                "",
+                1,
+            )
+        )
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("Missing evidence stage was accepted")
+assert "sha256sum --check --strict" in release_evidence_guard
+assert "test ! -L" in release_evidence_guard
+assert "Metadata.ImageID" in release_evidence_guard
+assert "statement.predicate==$predicate[0]" in release_evidence_guard
+assert "verify_list SIGNATURES-SHA256SUMS.txt" in release_evidence_guard
+print(
+    "CFS_RELEASE_EVIDENCE_STAGE_CONTRACT_PASS explicit_sets=true immutable_manifests=true config_manifest_index_distinct=true actual_shell_fault_campaign_required=true"
+)
 dockerfile = (root / "docker/Dockerfile").read_text(encoding="utf-8")
 base_lock = (root / "docs/CFS-BASE-IMAGE-LOCK.md").read_text(encoding="utf-8")
 permission_plan = (root / "docs/CFS-RELEASE-PERMISSIONS-PLAN.md").read_text(
@@ -135,16 +189,18 @@ def verify_strict_release_tag_admission(source: str) -> None:
     assert "registry_mutations_before_validation: 0" in postcheckout_block
 
     assert re.search(
-        r"sha256sum [^\n]*RELEASE-TAG-ADMISSION\.json > PREPUBLISH-SHA256SUMS\.txt",
+        r"sha256sum [^\n]*RELEASE-TAG-ADMISSION\.json RELEASE-SOURCE\.json > PREPUBLISH-SHA256SUMS\.txt",
         release_block,
     )
     artifact_block = release_block[
         release_block.index("- name: Upload complete release evidence") :
     ]
     assert re.search(
-        r"PREPUBLISH-SHA256SUMS\.txt\n            RELEASE-TAG-ADMISSION\.json",
+        r"^            PREPUBLISH-SHA256SUMS\.txt$",
         artifact_block,
+        re.M,
     )
+    assert re.search(r"^            RELEASE-TAG-ADMISSION\.json$", artifact_block, re.M)
     assert "if-no-files-found: error" in artifact_block
 
 
@@ -234,7 +290,8 @@ weakened_release_workflows = (
         f"{checkout_block.rstrip()}\n        with:\n          path: release-source\n",
     ),
     workflow.replace(
-        " OCI-INSPECTOR.json RELEASE-TAG-ADMISSION.json >", " OCI-INSPECTOR.json >"
+        " OCI-INSPECTOR.json RELEASE-TAG-ADMISSION.json RELEASE-SOURCE.json >",
+        " OCI-INSPECTOR.json RELEASE-SOURCE.json >",
     ),
     workflow.replace("            RELEASE-TAG-ADMISSION.json\n", ""),
     workflow.replace(
@@ -547,6 +604,7 @@ literal_secret_patterns = [
 ]
 for source in (
     workflow,
+    release_evidence_guard,
     ci_workflow,
     dockerfile,
     base_lock,
