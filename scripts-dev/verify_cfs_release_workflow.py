@@ -626,6 +626,10 @@ assert (
 assert "linux/amd64" in base_lock
 assert "apk add --no-cache libuuid=2.41.6-r1" in dockerfile
 assert "USER 991:991" in dockerfile
+assert uv_lock.split("@", 1)[1] in ci_workflow
+assert python_lock.split("@", 1)[1] in ci_workflow
+assert uv_lock.split("@", 1)[0] in ci_workflow
+assert python_lock.split("@", 1)[0] in ci_workflow
 assert "APPLIED AND READ-BACK VERIFIED ON 2026-09-03" in permission_plan
 assert "Historical state before R3" in permission_plan
 assert "Applied state after R3" in permission_plan

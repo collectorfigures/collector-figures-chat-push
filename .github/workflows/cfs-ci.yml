@@ -90,14 +90,14 @@ jobs:
           test "$(docker image inspect "$CFS_CI_IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$GITHUB_SHA"
           test "$(docker image inspect "$CFS_CI_IMAGE" --format '{{.Os}}/{{.Architecture}}')" = "linux/amd64"
           test "$(docker image inspect "$CFS_CI_IMAGE" --format '{{json .Config.Healthcheck.Test}}')" != "null"
-          uv_digest="sha256:9aa60c50016c0485636ab9a830246a6ef3399aa4a8bab3d17ef4a2358fba2ca7"
-          python_digest="sha256:9c47360a2a0355e2da18516d0b1c2126ec22c195d2185e97347c9d98398c5bef"
-          docker buildx imagetools inspect --raw "ghcr.io/astral-sh/uv:python3.12-bookworm@$uv_digest" > UV-BASE-MANIFEST.json
-          docker buildx imagetools inspect --raw "docker.io/library/python:3.12-slim-bookworm@$python_digest" > PYTHON-BASE-MANIFEST.json
+          uv_digest="sha256:35da51582abbc137cc0860033b2b65fb86c22e0d4c7cb2715758cbd8cd29f08f"
+          python_digest="sha256:f0b72408d0c2ee5cf1df64adce9b92ab4f2d3c8cfbb879ac5ab1d0ec07208555"
+          docker buildx imagetools inspect --raw "ghcr.io/astral-sh/uv:python3.12-alpine@$uv_digest" > UV-BASE-MANIFEST.json
+          docker buildx imagetools inspect --raw "docker.io/library/python:3.12-alpine3.23@$python_digest" > PYTHON-BASE-MANIFEST.json
           test "sha256:$(sha256sum UV-BASE-MANIFEST.json | cut -d' ' -f1)" = "$uv_digest"
           test "sha256:$(sha256sum PYTHON-BASE-MANIFEST.json | cut -d' ' -f1)" = "$python_digest"
           jq -n --arg uv "$uv_digest" --arg python "$python_digest" \
-            '{requirements: {image: "ghcr.io/astral-sh/uv:python3.12-bookworm", digest: $uv, platform: "linux/amd64"}, builder: {image: "ghcr.io/astral-sh/uv:python3.12-bookworm", digest: $uv, platform: "linux/amd64"}, runtime: {image: "docker.io/library/python:3.12-slim-bookworm", digest: $python, platform: "linux/amd64"}}' \
+            '{requirements: {image: "ghcr.io/astral-sh/uv:python3.12-alpine", digest: $uv, platform: "linux/amd64"}, builder: {image: "ghcr.io/astral-sh/uv:python3.12-alpine", digest: $uv, platform: "linux/amd64"}, runtime: {image: "docker.io/library/python:3.12-alpine3.23", digest: $python, platform: "linux/amd64"}}' \
             > PUSH-RESOLVED-BASE-DIGESTS.json
           jq -e . PUSH-RESOLVED-BASE-DIGESTS.json >/dev/null
           printf 'CFS_PUSH_LOCAL_DOCKER_BUILD_PASS user=991:991 platform=linux/amd64 revision=%s healthcheck=true resolved_bases=3 publication=0\n' "$GITHUB_SHA"
