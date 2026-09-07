@@ -117,7 +117,7 @@ class ApnsTestCase(testutils.TestCase):
 
         # Assert
         self.assertEqual(1, method.call_count)
-        ((notification_req,), _kwargs) = method.call_args
+        (notification_req,), _kwargs = method.call_args
         payload = notification_req.message
 
         self.assertLessEqual(len(apnstruncate.json_encode(payload)), 240)
@@ -141,7 +141,7 @@ class ApnsTestCase(testutils.TestCase):
 
         # Assert
         self.assertEqual(1, method.call_count)
-        ((notification_req,), _kwargs) = method.call_args
+        (notification_req,), _kwargs = method.call_args
         payload = notification_req.message
 
         self.assertGreater(len(apnstruncate.json_encode(payload)), 200)
@@ -162,7 +162,7 @@ class ApnsTestCase(testutils.TestCase):
 
         # Assert
         self.assertEqual(1, method.call_count)
-        ((notification_req,), _kwargs) = method.call_args
+        (notification_req,), _kwargs = method.call_args
 
         self.assertEqual(
             {
@@ -205,7 +205,7 @@ class ApnsTestCase(testutils.TestCase):
 
         # Assert
         self.assertEqual(1, method.call_count)
-        ((notification_req,), _kwargs) = method.call_args
+        (notification_req,), _kwargs = method.call_args
 
         self.assertEqual(
             {
@@ -242,7 +242,7 @@ class ApnsTestCase(testutils.TestCase):
 
         # Assert
         self.assertEqual(1, method.call_count)
-        ((notification_req,), _kwargs) = method.call_args
+        (notification_req,), _kwargs = method.call_args
 
         self.assertEqual(
             {"aps": {"badge": 2}},
@@ -269,7 +269,7 @@ class ApnsTestCase(testutils.TestCase):
 
         # Assert
         self.assertEqual(1, method.call_count)
-        ((notification_req,), _kwargs) = method.call_args
+        (notification_req,), _kwargs = method.call_args
 
         self.assertEqual(
             {
@@ -339,7 +339,7 @@ class ApnsTestCase(testutils.TestCase):
         )
 
         # Get request payload
-        ((notification_req,), _kwargs) = method.call_args
+        (notification_req,), _kwargs = method.call_args
         payload = notification_req.message
 
         # Assert request worked
@@ -425,7 +425,7 @@ class ApnsTestCase(testutils.TestCase):
 
         # Assert
         self.assertEqual(1, method.call_count)
-        ((notification_req,), _kwargs) = method.call_args
+        (notification_req,), _kwargs = method.call_args
 
         self.assertEqual(
             {
