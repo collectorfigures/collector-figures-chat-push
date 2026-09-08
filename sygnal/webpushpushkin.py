@@ -275,13 +275,19 @@ class WebpushPushkin(ConcurrencyLimitedPushkin):
         opaque_path_token = r"[A-Za-z0-9:_-]{16,1024}"
 
         if hostname == "updates.push.services.mozilla.com":
-            if parsed.query or not re.fullmatch(
-                rf"/wpush/v2/{opaque_path_token}", parsed.path
+            if (
+                parsed.params
+                or parsed.query
+                or not re.fullmatch(rf"/wpush/v2/{opaque_path_token}", parsed.path)
             ):
                 raise ValueError("unsupported Mozilla WebPush endpoint shape")
         elif hostname == "fcm.googleapis.com":
-            if parsed.query or not re.fullmatch(
-                rf"/(?:fcm/send|wp)/{opaque_path_token}", parsed.path
+            if (
+                parsed.params
+                or parsed.query
+                or not re.fullmatch(
+                    rf"/(?:fcm/send|wp)/{opaque_path_token}", parsed.path
+                )
             ):
                 raise ValueError("unsupported FCM WebPush endpoint shape")
         elif re.fullmatch(r"(?:[a-z0-9-]+\.)*notify\.windows\.com", hostname):
@@ -409,30 +415,27 @@ class WebpushPushkin(ConcurrencyLimitedPushkin):
         # permanent errors
         if response.code == 404 or response.code == 410:
             logger.warning(
-                "Rejecting WebPush subscription %s; subscription is invalid on %s: %d: %s",
+                "Rejecting WebPush subscription %s; subscription is invalid on %s: %d",
                 self._pushkey_log_id(pushkey),
                 endpoint_domain,
                 response.code,
-                response_text,
             )
             return True
         # and temporary ones
         if response.code >= 400:
             logger.warning(
-                "webpush request failed for subscription %s; %s responded with %d: %s",
+                "webpush request failed for subscription %s; %s responded with %d",
                 self._pushkey_log_id(pushkey),
                 endpoint_domain,
                 response.code,
-                response_text,
             )
         elif response.code != 201:
             logger.info(
                 "webpush request for subscription %s didn't respond with 201; "
-                + "%s responded with %d: %s",
+                + "%s responded with %d",
                 self._pushkey_log_id(pushkey),
                 endpoint_domain,
                 response.code,
-                response_text,
             )
         return False
 

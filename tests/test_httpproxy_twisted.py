@@ -114,7 +114,7 @@ class SygnalTwistedProxyTests(TestCase):
         # there should be a pending TCP connection
         clients = self.reactor.tcpClients
         self.assertEqual(len(clients), 1)
-        (host, port, client_factory, _timeout, _bindAddress) = clients[0]
+        host, port, client_factory, _timeout, _bindAddress = clients[0]
         self.assertEqual(host, "1.2.3.5")
         self.assertEqual(port, 1080)
 

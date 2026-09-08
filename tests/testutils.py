@@ -95,7 +95,7 @@ class TestCase(unittest.TestCase):
         # sygnal should have started a single (fake) tcp listener
         listeners = self.reactor.tcpServers
         self.assertEqual(len(listeners), 1)
-        (port, site, _backlog, interface) = listeners[0]
+        port, site, _backlog, interface = listeners[0]
         self.site = site
 
     def _make_dummy_notification(self, devices):

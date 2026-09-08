@@ -13,8 +13,10 @@ ARG POETRY_VERSION=1.8.3
 ###
 ### The CFS release candidate is intentionally restricted to linux/amd64.
 ###
-# linux/amd64 manifest lock for ghcr.io/astral-sh/uv:python3.12-bookworm
-FROM --platform=linux/amd64 ghcr.io/astral-sh/uv:python3.12-bookworm@sha256:9aa60c50016c0485636ab9a830246a6ef3399aa4a8bab3d17ef4a2358fba2ca7 AS requirements
+# linux/amd64 manifest lock; Python 3.12 / Alpine 3.23 in all stages.
+FROM --platform=linux/amd64 ghcr.io/astral-sh/uv:python3.12-alpine@sha256:35da51582abbc137cc0860033b2b65fb86c22e0d4c7cb2715758cbd8cd29f08f AS requirements
+
+RUN apk add --no-cache libuuid=2.41.6-r1
 
 WORKDIR /sygnal
 
@@ -49,8 +51,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 ###
 ### Stage 1: builder
 ###
-# linux/amd64 manifest lock for ghcr.io/astral-sh/uv:python3.12-bookworm
-FROM --platform=linux/amd64 ghcr.io/astral-sh/uv:python3.12-bookworm@sha256:9aa60c50016c0485636ab9a830246a6ef3399aa4a8bab3d17ef4a2358fba2ca7 AS builder
+# Build native dependencies against the same musl distribution as runtime.
+FROM --platform=linux/amd64 ghcr.io/astral-sh/uv:python3.12-alpine@sha256:35da51582abbc137cc0860033b2b65fb86c22e0d4c7cb2715758cbd8cd29f08f AS builder
+
+RUN apk add --no-cache build-base=0.5-r3 libffi-dev=3.5.2-r0 libuuid=2.41.6-r1
 
 # This silences a warning as uv isn't able to do hardlinks between its cache
 # (mounted as --mount=type=cache) and the target directory.
@@ -90,8 +94,11 @@ RUN \
 ### Stage 2: runtime
 ###
 
-# linux/amd64 manifest lock for docker.io/library/python:3.12-slim-bookworm
-FROM --platform=linux/amd64 docker.io/library/python:3.12-slim-bookworm@sha256:9c47360a2a0355e2da18516d0b1c2126ec22c195d2185e97347c9d98398c5bef
+# linux/amd64 manifest lock for docker.io/library/python:3.12-alpine3.23
+FROM --platform=linux/amd64 docker.io/library/python:3.12-alpine3.23@sha256:f0b72408d0c2ee5cf1df64adce9b92ab4f2d3c8cfbb879ac5ab1d0ec07208555
+
+# Same-distribution util-linux fixes; no scanner exception or removed package.
+RUN apk add --no-cache libuuid=2.41.6-r1
 
 ARG CFS_SOURCE_COMMIT=unknown
 LABEL org.opencontainers.image.title="Collector Figures Chat Push Gateway" \
@@ -101,8 +108,8 @@ LABEL org.opencontainers.image.title="Collector Figures Chat Push Gateway" \
 
 COPY --from=builder /install /usr/local
 
-RUN groupadd --gid 991 sygnal \
-  && useradd --uid 991 --gid 991 --home-dir /nonexistent --shell /usr/sbin/nologin sygnal \
+RUN addgroup -g 991 sygnal \
+  && adduser -D -H -u 991 -G sygnal -h /nonexistent -s /sbin/nologin sygnal \
   && install -d -o 991 -g 991 -m 0750 /data
 
 WORKDIR /data

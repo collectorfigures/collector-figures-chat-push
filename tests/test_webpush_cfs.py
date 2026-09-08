@@ -6,6 +6,8 @@ import json
 from hashlib import sha256
 from pathlib import Path
 from urllib.parse import urlparse
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from sygnal.notifications import Device, Notification
 from sygnal.webpushpushkin import WebpushPushkin
@@ -96,13 +98,27 @@ def test_pushkey_log_identifier_is_one_way_and_stable() -> None:
     assert len(identifier) == 12
 
 
+def test_provider_response_body_is_not_logged() -> None:
+    instance = object.__new__(WebpushPushkin)
+    body = "synthetic-provider-response-must-not-be-logged"
+    for status in (404, 410, 429, 500, 202):
+        response = SimpleNamespace(
+            code=status, headers=SimpleNamespace(getRawHeaders=lambda _: None)
+        )
+        with patch("sygnal.webpushpushkin.logger", new=Mock()) as log:
+            instance._handle_response(
+                response, body, "synthetic-pushkey", "fcm.googleapis.com"
+            )
+            assert body not in repr(log.mock_calls)
+
+
 def test_webpush_endpoint_validation_is_https_origin_safe_and_exact() -> None:
     fixture_path = Path(__file__).parent / "fixtures" / "cfs-webpush-endpoints.json"
     fixtures = json.loads(fixture_path.read_text(encoding="utf-8"))
 
     assert (
         sha256(fixture_path.read_bytes()).hexdigest()
-        == "9999f3e68b1bba37355fccd5231c8026a679d7550bff1cd7359c97eabcb4aab6"
+        == "fc31247bd2219a9c7a7432ce7f41fd9ddef4a0c43ef337fb71f1743e454682be"
     )
 
     assert fixtures["schema"] == "cfs-webpush-endpoint-fixtures/v2"

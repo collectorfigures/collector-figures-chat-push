@@ -6,10 +6,124 @@ from pathlib import Path
 import hashlib
 import re
 
-
 root = Path(__file__).parents[1]
 workflow = (root / ".github/workflows/cfs-release.yml").read_text(encoding="utf-8")
 ci_workflow = (root / ".github/workflows/cfs-ci.yml").read_text(encoding="utf-8")
+release_evidence_guard = (
+    root / "scripts-dev/cfs-verify-release-evidence.sh"
+).read_text(encoding="utf-8")
+
+
+def verify_evidence_stages(source):
+    for stage, count in {"local": 2, "bind": 1, "candidate": 1, "signed": 2}.items():
+        assert (
+            source.count(f"bash scripts-dev/cfs-verify-release-evidence.sh {stage}\n")
+            == count
+        )
+    assert not re.search(r">>\s*PREPUBLISH-SHA256SUMS\.txt", source)
+    assert (
+        "LOCAL-IMAGE-SHA256.txt OCI-INSPECTOR.json RELEASE-TAG-ADMISSION.json RELEASE-SOURCE.json > PREPUBLISH-SHA256SUMS.txt"
+        in source
+    )
+    assert re.search(r"cfs-verify-release-evidence\.sh local\s+docker tag", source)
+    assert re.search(r"cfs-verify-release-evidence\.sh candidate\s+cosign sign", source)
+    assert re.search(
+        r"cfs-verify-release-evidence\.sh signed\s+bash scripts-dev/cfs-promote-oci-tag\.sh",
+        source,
+    )
+    for filename in [
+        "CANDIDATE-SHA256SUMS.txt",
+        "SIGNATURES-SHA256SUMS.txt",
+        "RELEASE-SHA256SUMS.txt",
+        "OCI-PLATFORM-MANIFEST.json",
+        "OCI-DIGEST-BINDING.json",
+    ]:
+        assert filename in source[source.index("Upload complete release evidence") :]
+
+
+verify_evidence_stages(workflow)
+for evidence_stage in ["local", "candidate", "signed"]:
+    try:
+        verify_evidence_stages(
+            workflow.replace(
+                f"bash scripts-dev/cfs-verify-release-evidence.sh {evidence_stage}\n",
+                "",
+                1,
+            )
+        )
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("Missing evidence stage was accepted")
+assert "sha256sum --check --strict" in release_evidence_guard
+assert "test ! -L" in release_evidence_guard
+assert "Metadata.ImageID" in release_evidence_guard
+assert "statement.predicate==$predicate[0]" in release_evidence_guard
+assert "verify_list SIGNATURES-SHA256SUMS.txt" in release_evidence_guard
+
+
+def verify_cosign_contract(source):
+    assert re.search(
+        r"cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6[^\n]*\n\s+with:\n\s+cosign-release: v3\.0\.6\n",
+        source,
+    )
+    block = source[
+        source.index("- name: Sign, attest and verify") : source.index(
+            "- name: Reverify protected main before formal"
+        )
+    ]
+    assert re.search(r"run: \|\n\s+set -Eeuo pipefail\n", block)
+    assert (
+        "cosign attest --yes --type slsaprovenance1 --predicate BUILD-PROVENANCE.json"
+        in block
+    )
+    assert (
+        'cosign verify-attestation --type slsaprovenance1 "$IMAGE@$digest" --certificate-identity "$CERTIFICATE_IDENTITY" --certificate-oidc-issuer "https://token.actions.githubusercontent.com" > COSIGN-ATTESTATION-VERIFY.raw.jsonl\n'
+        in block
+    )
+    assert (
+        'jq -se \'if length > 0 and all(.[]; type == "object") then . else error("expected verified envelope objects") end\' COSIGN-ATTESTATION-VERIFY.raw.jsonl > COSIGN-ATTESTATION-VERIFY.json'
+        in block
+    )
+    assert (
+        "sha256sum COSIGN-VERIFY.json COSIGN-ATTESTATION-VERIFY.raw.jsonl COSIGN-ATTESTATION-VERIFY.json > SIGNATURES-SHA256SUMS.txt"
+        in block
+    )
+    assert (
+        "COSIGN-ATTESTATION-VERIFY.raw.jsonl"
+        in source[source.index("Upload complete release evidence") :]
+    )
+
+
+verify_cosign_contract(workflow)
+for before, after in [
+    ("--type slsaprovenance1", "--type slsaprovenance"),
+    ("cosign-release: v3.0.6", "cosign-release: latest"),
+    ("set -Eeuo pipefail", "set +e"),
+    (
+        "> COSIGN-ATTESTATION-VERIFY.raw.jsonl",
+        "| jq -s . > COSIGN-ATTESTATION-VERIFY.raw.jsonl",
+    ),
+    ('if length > 0 and all(.[]; type == "object")', "if true"),
+    (
+        "sha256sum COSIGN-VERIFY.json COSIGN-ATTESTATION-VERIFY.raw.jsonl",
+        "sha256sum COSIGN-VERIFY.json",
+    ),
+]:
+    try:
+        verify_cosign_contract(workflow.replace(before, after, 1))
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("Weakened Cosign interface contract accepted")
+assert "$normalized==[.]" in release_evidence_guard
+assert 'payloadType=="application/vnd.in-toto+json"' in release_evidence_guard
+print(
+    "CFS_COSIGN_V3_0_6_INTERFACE_CONTRACT_PASS predicate=slsaprovenance1 raw_stdout_preserved=true normalization_after_success=true real_signing=false"
+)
+print(
+    "CFS_RELEASE_EVIDENCE_STAGE_CONTRACT_PASS explicit_sets=true immutable_manifests=true config_manifest_index_distinct=true actual_shell_fault_campaign_required=true"
+)
 dockerfile = (root / "docker/Dockerfile").read_text(encoding="utf-8")
 base_lock = (root / "docs/CFS-BASE-IMAGE-LOCK.md").read_text(encoding="utf-8")
 permission_plan = (root / "docs/CFS-RELEASE-PERMISSIONS-PLAN.md").read_text(
@@ -135,16 +249,18 @@ def verify_strict_release_tag_admission(source: str) -> None:
     assert "registry_mutations_before_validation: 0" in postcheckout_block
 
     assert re.search(
-        r"sha256sum [^\n]*RELEASE-TAG-ADMISSION\.json > PREPUBLISH-SHA256SUMS\.txt",
+        r"sha256sum [^\n]*RELEASE-TAG-ADMISSION\.json RELEASE-SOURCE\.json > PREPUBLISH-SHA256SUMS\.txt",
         release_block,
     )
     artifact_block = release_block[
         release_block.index("- name: Upload complete release evidence") :
     ]
     assert re.search(
-        r"PREPUBLISH-SHA256SUMS\.txt\n            RELEASE-TAG-ADMISSION\.json",
+        r"^            PREPUBLISH-SHA256SUMS\.txt$",
         artifact_block,
+        re.M,
     )
+    assert re.search(r"^            RELEASE-TAG-ADMISSION\.json$", artifact_block, re.M)
     assert "if-no-files-found: error" in artifact_block
 
 
@@ -234,7 +350,8 @@ weakened_release_workflows = (
         f"{checkout_block.rstrip()}\n        with:\n          path: release-source\n",
     ),
     workflow.replace(
-        " OCI-INSPECTOR.json RELEASE-TAG-ADMISSION.json >", " OCI-INSPECTOR.json >"
+        " OCI-INSPECTOR.json RELEASE-TAG-ADMISSION.json RELEASE-SOURCE.json >",
+        " OCI-INSPECTOR.json RELEASE-SOURCE.json >",
     ),
     workflow.replace("            RELEASE-TAG-ADMISSION.json\n", ""),
     workflow.replace(
@@ -486,27 +603,33 @@ assert 'docker tag "$LOCAL_IMAGE" "$IMAGE:$GITHUB_REF_NAME"' not in workflow[:pr
 assert "PREPUBLISH-SHA256SUMS.txt" in workflow
 
 uv_lock = (
-    "ghcr.io/astral-sh/uv:python3.12-bookworm@"
-    "sha256:9aa60c50016c0485636ab9a830246a6ef3399aa4a8bab3d17ef4a2358fba2ca7"
+    "ghcr.io/astral-sh/uv:python3.12-alpine@"
+    "sha256:35da51582abbc137cc0860033b2b65fb86c22e0d4c7cb2715758cbd8cd29f08f"
 )
 python_lock = (
-    "docker.io/library/python:3.12-slim-bookworm@"
-    "sha256:9c47360a2a0355e2da18516d0b1c2126ec22c195d2185e97347c9d98398c5bef"
+    "docker.io/library/python:3.12-alpine3.23@"
+    "sha256:f0b72408d0c2ee5cf1df64adce9b92ab4f2d3c8cfbb879ac5ab1d0ec07208555"
 )
 assert dockerfile.count(uv_lock) == 2
 assert dockerfile.count(python_lock) == 1
 assert dockerfile.count("FROM --platform=linux/amd64") == 3
-assert "ghcr.io/astral-sh/uv:python3.12-bookworm" in base_lock
+assert "ghcr.io/astral-sh/uv:python3.12-alpine" in base_lock
 assert (
-    "sha256:9aa60c50016c0485636ab9a830246a6ef3399aa4a8bab3d17ef4a2358fba2ca7"
+    "sha256:35da51582abbc137cc0860033b2b65fb86c22e0d4c7cb2715758cbd8cd29f08f"
     in base_lock
 )
-assert "docker.io/library/python:3.12-slim-bookworm" in base_lock
+assert "docker.io/library/python:3.12-alpine3.23" in base_lock
 assert (
-    "sha256:9c47360a2a0355e2da18516d0b1c2126ec22c195d2185e97347c9d98398c5bef"
+    "sha256:f0b72408d0c2ee5cf1df64adce9b92ab4f2d3c8cfbb879ac5ab1d0ec07208555"
     in base_lock
 )
 assert "linux/amd64" in base_lock
+assert "apk add --no-cache libuuid=2.41.6-r1" in dockerfile
+assert "USER 991:991" in dockerfile
+assert uv_lock.split("@", 1)[1] in ci_workflow
+assert python_lock.split("@", 1)[1] in ci_workflow
+assert uv_lock.split("@", 1)[0] in ci_workflow
+assert python_lock.split("@", 1)[0] in ci_workflow
 assert "APPLIED AND READ-BACK VERIFIED ON 2026-09-03" in permission_plan
 assert "Historical state before R3" in permission_plan
 assert "Applied state after R3" in permission_plan
@@ -547,6 +670,7 @@ literal_secret_patterns = [
 ]
 for source in (
     workflow,
+    release_evidence_guard,
     ci_workflow,
     dockerfile,
     base_lock,
